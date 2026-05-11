@@ -94,7 +94,7 @@ function ensureHistorialCols_() {
     catRows.push(`Dist. ${c} MXN (con IVA)`);
   });
 
-  const labels = baseRows.concat(catRows);
+  const labels = baseRows.concat(catRows).concat(['Imagen']);
 
   if (sh.getLastRow() < labels.length) {
     sh.getRange(1, 1, labels.length, 1).setValues(labels.map(x => [x]));
@@ -158,6 +158,65 @@ function applySemaforoRules_(sh, rowIndex) {
   sh.setConditionalFormatRules(rules);
 }
 
+
+
+function eliminarImagenesEnCelda_(sh, row, col) {
+  sh.getImages().forEach(image => {
+    const anchor = image.getAnchorCell();
+    if (anchor && anchor.getRow() === row && anchor.getColumn() === col) {
+      image.remove();
+    }
+  });
+}
+
+function guardarImagenRegistro_(sh, row, col, imagen) {
+  if (!row) return;
+
+  eliminarImagenesEnCelda_(sh, row, col);
+
+  const cell = sh.getRange(row, col);
+  cell.clearContent().clearNote();
+
+  if (!imagen || !imagen.dataUrl) {
+    cell.setValue('Sin imagen');
+    return;
+  }
+
+  const contentType = String(imagen.type || '').toLowerCase();
+  const name = String(imagen.name || 'imagen-producto');
+  const source = String(imagen.source || 'file');
+  const size = Number(imagen.size) || 0;
+  const match = String(imagen.dataUrl).match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i);
+
+  if (!contentType.startsWith('image/') || !match) {
+    cell.setValue('Imagen inválida');
+    cell.setNote('El archivo enviado no es una imagen válida.');
+    return;
+  }
+
+  const maxBytes = 2 * 1024 * 1024;
+  if (size > maxBytes) {
+    cell.setValue('Imagen excede 2 MB');
+    cell.setNote(`Archivo rechazado: ${name} (${Math.round(size / 1024)} KB).`);
+    return;
+  }
+
+  const bytes = Utilities.base64Decode(match[2]);
+  if (Math.max(size, bytes.length) > maxBytes) {
+    cell.setValue('Imagen excede 2 MB');
+    cell.setNote(`Archivo rechazado después de validar base64: ${name} (${Math.round(bytes.length / 1024)} KB).`);
+    return;
+  }
+
+  const blob = Utilities.newBlob(bytes, match[1], name);
+  cell.setValue(name);
+  cell.setNote(`Imagen: ${name}\nTipo: ${match[1]}\nTamaño: ${Math.round(bytes.length / 1024)} KB\nOrigen: ${source}`);
+  sh.setRowHeight(row, 120);
+  sh.setColumnWidth(col, Math.max(sh.getColumnWidth(col), 140));
+  const image = sh.insertImage(blob, col, row);
+  image.setWidth(120).setHeight(100);
+}
+
 /* ===================== Guardado principal (columnas) ===================== */
 function saveRegistroColumnar(payload) {
   const {
@@ -165,7 +224,8 @@ function saveRegistroColumnar(payload) {
     costoUSD, margen, arancel, iva, tc, aplicarIVAenUSD,
     listaUSD_sinIVA,
     certMXN, usarCert,
-    roiUnits, roiUnitPrice, roiTarget
+    roiUnits, roiUnitPrice, roiTarget,
+    imagen
   } = payload;
 
   const { sheet: sh, rowIndex } = ensureHistorialCols_();
@@ -183,6 +243,7 @@ function saveRegistroColumnar(payload) {
   sh.getRange(rowIndex['Producto'], col).setValue(producto || '');
   sh.getRange(rowIndex['Código'], col).setValue(codigo || '');
   sh.getRange(rowIndex['MOQ'], col).setValue(moq || 0);
+  guardarImagenRegistro_(sh, rowIndex['Imagen'], col, imagen);
   sh.getRange(rowIndex['Costo USD'], col).setValue(costoUSD || 0);
   sh.getRange(rowIndex['Tipo de cambio'], col).setValue(tc || 0);
   sh.getRange(rowIndex['IVA (%)'], col).setValue((Number(iva)*100) || 0);
