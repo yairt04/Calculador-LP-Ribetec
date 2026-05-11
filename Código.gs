@@ -13,10 +13,117 @@ function showModal() {
 }
 
 // ===== Datos maestros
+const TC_SOURCE_BANXICO = 'Banxico FIX';
+const TC_SOURCE_GOOGLEFINANCE = 'GOOGLEFINANCE';
+const TC_CACHE_KEY = 'TC_USD_MXN_DIA';
+const TC_CACHE_SECONDS = 60 * 60 * 6;
+const BANXICO_SERIE_FIX = 'SF43718';
+
 function getTipoCambio() {
-  const rng = SpreadsheetApp.getActive().getRangeByName('TC_USDMXN');
-  const tc = rng ? rng.getValue() : 0;
-  return Number(tc) || 0;
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get(TC_CACHE_KEY);
+
+  if (cached) {
+    return JSON.parse(cached);
+  }
+
+  let result = null;
+
+  try {
+    result = getTipoCambioBanxico_();
+  } catch (err) {
+    console.warn('Banxico falló: ' + err.message);
+  }
+
+  if (!result || !result.tc) {
+    result = getTipoCambioGoogleFinance_();
+  }
+
+  if (!result || !result.tc) {
+    throw new Error('No se pudo obtener el tipo de cambio USD/MXN.');
+  }
+
+  cache.put(TC_CACHE_KEY, JSON.stringify(result), TC_CACHE_SECONDS);
+  return result;
+}
+
+function getTipoCambioBanxico_() {
+  const token = PropertiesService.getScriptProperties().getProperty('BANXICO_TOKEN');
+  const url = 'https://www.banxico.org.mx/SieAPIRest/service/v1/series/'
+    + BANXICO_SERIE_FIX
+    + '/datos/oportuno';
+
+  const options = {
+    method: 'get',
+    muteHttpExceptions: true,
+    headers: {}
+  };
+
+  if (token) {
+    options.headers['Bmx-Token'] = token;
+  }
+
+  const res = UrlFetchApp.fetch(url, options);
+  const code = res.getResponseCode();
+
+  if (code < 200 || code >= 300) {
+    throw new Error('Banxico respondió HTTP ' + code);
+  }
+
+  const json = JSON.parse(res.getContentText());
+  const serie = json.bmx && json.bmx.series && json.bmx.series[0];
+  const dato = serie && serie.datos && serie.datos[0];
+
+  if (!dato || !dato.dato) {
+    throw new Error('Respuesta Banxico sin dato de TC.');
+  }
+
+  const tc = Number(String(dato.dato).replace(',', ''));
+
+  if (!tc || isNaN(tc)) {
+    throw new Error('TC Banxico inválido.');
+  }
+
+  return {
+    tc,
+    fecha: normalizarFechaTipoCambio_(dato.fecha),
+    fuente: TC_SOURCE_BANXICO
+  };
+}
+
+
+function normalizarFechaTipoCambio_(fecha) {
+  const raw = String(fecha || '').trim();
+  const match = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (match) {
+    return match[3] + '-' + match[2].padStart(2, '0') + '-' + match[1].padStart(2, '0');
+  }
+  return raw || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
+function getTipoCambioGoogleFinance_() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName('_TC_TEMP');
+
+  if (!sh) sh = ss.insertSheet('_TC_TEMP');
+
+  sh.hideSheet();
+  sh.getRange('A1').setFormula('=GOOGLEFINANCE("CURRENCY:USDMXN")');
+
+  SpreadsheetApp.flush();
+  Utilities.sleep(1500);
+
+  const tc = Number(sh.getRange('A1').getValue());
+
+  if (!tc || isNaN(tc)) {
+    throw new Error('GOOGLEFINANCE no pudo obtener TC.');
+  }
+
+  return {
+    tc,
+    fecha: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+    fuente: TC_SOURCE_GOOGLEFINANCE
+  };
 }
 
 function getPlanDescuentos() {
@@ -66,12 +173,20 @@ const NPI_2026_IMAGE_HEIGHT = 110;
 function getNpi2026Labels_() {
   const baseRows = [
     'Registro','Fecha','Usuario','Imagen','Estatus NPI','Comentarios','Última actualización','Producto','Código','MOQ',
-    'Costo USD','Tipo de cambio','IVA (%)','Arancel (%)','Margen (%)','Aplicar IVA en USD',
+    'Costo USD','Tipo de cambio','Fecha TC','Fuente TC','IVA (%)','Arancel (%)','Margen (%)','Aplicar IVA en USD',
     'Costo puesto USD',
     'Lista de precios final (USD sin IVA)',
     'Lista USD (con IVA)',
     'Lista MXN (sin IVA)',
     'Lista MXN (con IVA)',
+    // Diamante de precios
+    'Mercado bajo USD',
+    'Mercado promedio USD',
+    'Mercado alto USD',
+    'Precio sugerido USD',
+    'Posición diamante',
+    'Brecha vs mercado promedio (%)',
+    'Recomendación precio',
     // Certificación
     'Usar certificación',
     'Costo certificación MXN',
@@ -213,6 +328,26 @@ function aplicarFormatoEstatusNpi_(sh, rowIndex, col, estatus) {
   sh.getRange(row, col).setBackground(pair[0]).setFontColor(pair[1]).setFontWeight('bold');
 }
 
+function aplicarFormatoDiamante_(sh, rowIndex, col, posicion) {
+  const row = rowIndex['Posición diamante'];
+  if (!row) return;
+
+  const colors = {
+    'Agresivo': ['#e8f0fe', '#174ea6'],
+    'Competitivo': ['#e6f4ea', '#137333'],
+    'Premium': ['#f3e8fd', '#6f2da8'],
+    'Fuera de rango': ['#fce8e6', '#a50e0e'],
+    'Sin datos': ['#f1f3f4', '#3c4043']
+  };
+
+  const pair = colors[posicion] || colors['Sin datos'];
+
+  sh.getRange(row, col)
+    .setBackground(pair[0])
+    .setFontColor(pair[1])
+    .setFontWeight('bold');
+}
+
 
 
 
@@ -334,6 +469,42 @@ function getRegistroNpi2026(registroId) {
   return { registroId: found.registroId, col: found.col, record };
 }
 
+function listarRegistrosNpi2026() {
+  const { sheet: sh, rowIndex } = ensureNpi2026_();
+
+  const lastCol = sh.getLastColumn();
+  if (lastCol < 2) return [];
+
+  const registroRow = rowIndex['Registro'] || 1;
+  const productoRow = rowIndex['Producto'] || 8;
+  const estatusRow = rowIndex['Estatus NPI'];
+  const lastUpdateRow = rowIndex['Última actualización'];
+  const width = lastCol - 1;
+
+  const registros = sh.getRange(registroRow, 2, 1, width).getValues()[0];
+  const productos = sh.getRange(productoRow, 2, 1, width).getValues()[0];
+  const estatus = estatusRow ? sh.getRange(estatusRow, 2, 1, width).getValues()[0] : [];
+  const updates = lastUpdateRow ? sh.getRange(lastUpdateRow, 2, 1, width).getValues()[0] : [];
+  const data = [];
+
+  for (let i = 0; i < registros.length; i++) {
+    const registroId = String(registros[i] || '').trim();
+    if (!registroId) continue;
+
+    const producto = String(productos[i] || '').trim();
+    data.push({
+      registroId,
+      producto,
+      estatus: String(estatus[i] || '').trim(),
+      ultimaActualizacion: updates[i] || '',
+      col: i + 2,
+      label: registroId + ' — ' + (producto || 'Sin producto')
+    });
+  }
+
+  return data.reverse();
+}
+
 function escribirRegistroNpi2026_(sh, rowIndex, col, payload, options) {
   options = options || {};
   payload = payload || {};
@@ -369,6 +540,8 @@ function escribirRegistroNpi2026_(sh, rowIndex, col, payload, options) {
   sh.getRange(rowIndex['MOQ'], col).setValue(Number(payload.moq) || 0);
   sh.getRange(rowIndex['Costo USD'], col).setValue(Number(payload.costoUSD) || 0);
   sh.getRange(rowIndex['Tipo de cambio'], col).setValue(Number(payload.tc) || 0);
+  sh.getRange(rowIndex['Fecha TC'], col).setValue(payload.tcFecha || '');
+  sh.getRange(rowIndex['Fuente TC'], col).setValue(payload.tcFuente || '');
   sh.getRange(rowIndex['IVA (%)'], col).setValue((Number(payload.iva)*100) || 0);
   sh.getRange(rowIndex['Arancel (%)'], col).setValue((Number(payload.arancel)*100) || 0);
   sh.getRange(rowIndex['Margen (%)'], col).setValue((Number(payload.margen)*100) || 0);
@@ -398,6 +571,15 @@ function escribirRegistroNpi2026_(sh, rowIndex, col, payload, options) {
     .setFormula(`=${ref('Lista de precios final (USD sin IVA)')}*${ref('Tipo de cambio')}`);
   sh.getRange(rowIndex['Lista MXN (con IVA)'], col)
     .setFormula(`=${ref('Lista MXN (sin IVA)')}*(1+${ref('IVA (%)')}/100)`);
+
+  sh.getRange(rowIndex['Mercado bajo USD'], col).setValue(Number(payload.mercadoBajoUsd) || 0);
+  sh.getRange(rowIndex['Mercado promedio USD'], col).setValue(Number(payload.mercadoPromUsd) || 0);
+  sh.getRange(rowIndex['Mercado alto USD'], col).setValue(Number(payload.mercadoAltoUsd) || 0);
+  sh.getRange(rowIndex['Precio sugerido USD'], col).setValue(Number(payload.precioSugeridoUsd) || 0);
+  sh.getRange(rowIndex['Posición diamante'], col).setValue(payload.posicionDiamante || 'Sin datos');
+  sh.getRange(rowIndex['Brecha vs mercado promedio (%)'], col).setValue(Number(payload.brechaMercadoProm) || 0);
+  sh.getRange(rowIndex['Recomendación precio'], col).setValue(payload.recomendacionPrecio || '').setWrap(true);
+  aplicarFormatoDiamante_(sh, rowIndex, col, payload.posicionDiamante || 'Sin datos');
 
   plan.forEach(p => {
     const dRow = rowIndex[`Desc. ${p.categoria} real (%)`];
@@ -445,6 +627,7 @@ function escribirRegistroNpi2026_(sh, rowIndex, col, payload, options) {
     'Lista de precios final (USD sin IVA)','Lista USD (con IVA)',
     'Lista MXN (sin IVA)','Lista MXN (con IVA)',
     'Costo certificación MXN','Costo certificación USD',
+    'Mercado bajo USD','Mercado promedio USD','Mercado alto USD','Precio sugerido USD',
     'ROI precio unitario USD','Ingreso total USD','Inversión total USD','Ganancia total USD'
   ];
   plan.forEach(p => {
@@ -455,7 +638,7 @@ function escribirRegistroNpi2026_(sh, rowIndex, col, payload, options) {
   });
   money.forEach(label => { if (rowIndex[label]) sh.getRange(rowIndex[label], col).setNumberFormat('$#,##0.00'); });
   sh.getRange(rowIndex['Tipo de cambio'], col).setNumberFormat('0.0000');
-  ['IVA (%)','Arancel (%)','Margen (%)','ROI objetivo (%)','% ROI'].forEach(label => {
+  ['IVA (%)','Arancel (%)','Margen (%)','Brecha vs mercado promedio (%)','ROI objetivo (%)','% ROI'].forEach(label => {
     const r = rowIndex[label]; if (r) sh.getRange(r, col).setNumberFormat('0.00');
   });
 

@@ -28,6 +28,17 @@
     .mode-chip { display:inline-block; padding:6px 12px; border-radius:999px; background:#e8f0fe; color:#174ea6; font-weight:700; }
     .npi-actions { display:flex; gap:8px; flex-wrap:wrap; align-items:end; }
     .npi-search { flex:1 1 240px; }
+    .diamond-wrap { margin:14px auto; max-width:420px; text-align:center; padding:12px; }
+    .diamond-label { font-weight:700; color:#666; margin:6px 0; }
+    .diamond-row { display:flex; align-items:center; justify-content:center; gap:14px; }
+    .diamond-center { width:88px; height:88px; transform:rotate(45deg); border:2px solid #ddd; border-radius:12px; display:flex; align-items:center; justify-content:center; background:#fafafa; font-size:28px; }
+    .diamond-center span { transform:rotate(-45deg); }
+    .diamond-point { padding:8px 12px; border-radius:999px; background:#f5f5f5; font-weight:600; border:1px solid transparent; }
+    .diamond-active { background:#e8f0fe !important; color:#174ea6 !important; border:1px solid #1a73e8; }
+    .diamond-agresivo { color:#174ea6; }
+    .diamond-competitivo { color:#137333; }
+    .diamond-premium { color:#6f2da8; }
+    .diamond-fuera { color:#a50e0e; }
 
     /* ===== Semáforo ROI (barra) ===== */
     .meter-wrap { margin-top:6px; }
@@ -57,7 +68,7 @@
   <h2>Calculadora de Precios (Lista en USD + ROI)</h2>
 
   <div class="row">
-    <button class="btn ghost" onclick="cargarTC()">Actualizar TC</button>
+    <button class="btn ghost" onclick="cargarTC()">Actualizar TC del día</button>
     <div id="tcInfo" class="muted">TC USD/MXN: …</div>
   </div>
 
@@ -68,8 +79,14 @@
       <label class="npi-search">Buscar registro
         <input id="buscarRegistroId" type="text" placeholder="RIB-DES-001" onkeydown="if(event.key==='Enter') buscarRegistro();">
       </label>
+      <label class="npi-search">Registros existentes
+        <select id="registroSelect" onchange="seleccionarRegistroExistente()">
+          <option value="">Cargando registros...</option>
+        </select>
+      </label>
       <div class="npi-actions">
         <button class="btn ghost" type="button" onclick="buscarRegistro()">Buscar</button>
+        <button class="btn ghost" type="button" onclick="cargarListaRegistros()">Actualizar lista</button>
         <button class="btn ghost" type="button" onclick="nuevoRegistro()">Nuevo registro</button>
         <button id="btnDuplicar" class="btn ghost" type="button" onclick="duplicarRegistro()" disabled>Duplicar registro</button>
       </div>
@@ -193,6 +210,43 @@
     <div>Distribuidor MXN (con IVA)</div><input class="outbox" id="distMxnCon" readonly><div>$</div>
   </div>
 
+
+
+  <div class="card">
+    <h3 style="margin:0 0 10px; font-size:16px;">Diamante de precios</h3>
+
+    <div class="row">
+      <label>Mercado bajo USD
+        <input id="mercadoBajoUsd" type="number" step="0.01" min="0" oninput="calcDiamantePrecios()">
+      </label>
+
+      <label>Mercado promedio USD
+        <input id="mercadoPromUsd" type="number" step="0.01" min="0" oninput="calcDiamantePrecios()">
+      </label>
+
+      <label>Mercado alto USD
+        <input id="mercadoAltoUsd" type="number" step="0.01" min="0" oninput="calcDiamantePrecios()">
+      </label>
+    </div>
+
+    <div class="diamond-wrap">
+      <div class="diamond-label top diamond-premium" id="diamondPremium">Premium</div>
+      <div class="diamond-row">
+        <div class="diamond-point diamond-agresivo" id="diamondAgresivo">Agresivo</div>
+        <div class="diamond-center" id="diamondCentro"><span>◆</span></div>
+        <div class="diamond-point diamond-fuera" id="diamondFuera">Fuera de rango</div>
+      </div>
+      <div class="diamond-label bottom diamond-competitivo" id="diamondCompetitivo">Competitivo</div>
+    </div>
+
+    <div class="grid">
+      <div>Precio sugerido USD</div><input class="outbox" id="precioSugeridoUsd" readonly><div>$</div>
+      <div>Brecha vs mercado promedio</div><input class="outbox" id="brechaMercadoProm" readonly><div>%</div>
+      <div>Posición diamante</div><input class="outbox" id="posicionDiamante" readonly><div></div>
+      <div>Recomendación</div><input class="outbox" id="recomendacionPrecio" readonly><div></div>
+    </div>
+  </div>
+
   <!-- ROI -->
   <div class="card grid">
     <div>Unidades</div><input id="unidadesRoi" type="number" step="1" min="0"><div></div>
@@ -264,6 +318,8 @@
     const IMAGE_MAX_DIMENSION = 1280;
     const IMAGE_JPEG_QUALITY = 0.82;
     let tc = 0, plan = [], imagenProducto = null, imagenPreviewUrl = null, imagenProcessing = false;
+    let tcFecha = '';
+    let tcFuente = '';
     let modoRegistro = 'nuevo';
     let registroActualId = null;
     let registroActualCol = null;
@@ -504,10 +560,20 @@
       if (o) o.style.display = 'none';
     }
 
+    function renderTcInfo() {
+      const el = document.getElementById('tcInfo');
+      if (!el) return;
+      el.textContent = 'TC USD/MXN: ' + (tc ? tc.toFixed(4) : '—') +
+        (tcFecha ? ' · ' + tcFecha : '') +
+        (tcFuente ? ' · ' + tcFuente : '');
+    }
+
     function cargarTC() {
-      google.script.run.withSuccessHandler(function(val){
-        tc = Number(val) || 0;
-        document.getElementById('tcInfo').textContent = 'TC USD/MXN: ' + (tc ? tc.toFixed(4) : '—');
+      google.script.run.withSuccessHandler(function(res){
+        tc = Number(res && res.tc ? res.tc : res) || 0;
+        tcFecha = res && res.fecha ? res.fecha : '';
+        tcFuente = res && res.fuente ? res.fuente : '';
+        renderTcInfo();
         calcBasicos();
       }).getTipoCambio();
 
@@ -563,9 +629,66 @@
       actualizarModoVisual();
     }
 
+    function syncRegistroSelect(registroId) {
+      const select = document.getElementById('registroSelect');
+      if (select && registroId) select.value = registroId;
+    }
+
+    function cargarListaRegistros() {
+      const select = document.getElementById('registroSelect');
+      if (select) {
+        select.innerHTML = '<option value="">Cargando registros...</option>';
+      }
+
+      google.script.run
+        .withSuccessHandler(function(rows){
+          const select = document.getElementById('registroSelect');
+          if (!select) return;
+
+          const selectedId = registroActualId || select.value;
+          select.innerHTML = '<option value="">Selecciona un registro...</option>';
+
+          if (!rows || !rows.length) {
+            select.innerHTML = '<option value="">Sin registros guardados</option>';
+            return;
+          }
+
+          rows.forEach(function(row){
+            const opt = document.createElement('option');
+            opt.value = row.registroId;
+            opt.textContent = row.label;
+            select.appendChild(opt);
+          });
+
+          if (selectedId) select.value = selectedId;
+        })
+        .withFailureHandler(function(err){
+          const select = document.getElementById('registroSelect');
+          if (select) {
+            select.innerHTML = '<option value="">Error al cargar registros</option>';
+          }
+          alert('Error al cargar lista de registros: ' + (err && err.message ? err.message : err));
+        })
+        .listarRegistrosNpi2026();
+    }
+
+    function seleccionarRegistroExistente() {
+      const select = document.getElementById('registroSelect');
+      const id = select ? select.value : '';
+
+      if (!id) return;
+
+      const input = document.getElementById('buscarRegistroId');
+      if (input) input.value = id;
+
+      buscarRegistro();
+    }
+
     function nuevoRegistro(){
       setModoNuevo();
-      ['producto','codigo','costo','certMXN','unidadesRoi','unitRoi','comentariosNpi'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+      const select = document.getElementById('registroSelect');
+      if (select) select.value = '';
+      ['producto','codigo','costo','certMXN','unidadesRoi','unitRoi','comentariosNpi','mercadoBajoUsd','mercadoPromUsd','mercadoAltoUsd','precioSugeridoUsd','brechaMercadoProm','posicionDiamante','recomendacionPrecio'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
       [['moq','0'],['margen','30'],['arancel','5'],['iva','16'],['roiTarget','30']].forEach(([id,val]) => { const el = document.getElementById(id); if (el) el.value = val; });
       const estatus = document.getElementById('estatusNpi'); if (estatus) estatus.value = 'Nuevo';
       const ivaEnUSD = document.getElementById('ivaEnUSD'); if (ivaEnUSD) ivaEnUSD.checked = false;
@@ -575,6 +698,7 @@
       setStatus('Formulario listo para crear un nuevo registro.');
       calcBasicos();
       calcROI();
+      calcDiamantePrecios();
     }
 
     function normalizarInputRegistroId(input) {
@@ -602,6 +726,7 @@
           if (!res) { alert('Registro no encontrado'); return; }
           llenarFormularioDesdeRegistro(res);
           setModoEditar(res.registroId, res.col);
+          syncRegistroSelect(res.registroId);
           setStatus(`Registro ${res.registroId} cargado para edición.`);
         })
         .withFailureHandler(function(err){
@@ -639,9 +764,17 @@
       const sheetTc = Number(r['Tipo de cambio']) || 0;
       if (sheetTc) {
         tc = sheetTc;
-        const tcInfo = document.getElementById('tcInfo');
-        if (tcInfo) tcInfo.textContent = 'TC USD/MXN: ' + tc.toFixed(4);
+        tcFecha = r['Fecha TC'] || '';
+        tcFuente = r['Fuente TC'] || '';
+        renderTcInfo();
       }
+      setValue('mercadoBajoUsd', r['Mercado bajo USD']);
+      setValue('mercadoPromUsd', r['Mercado promedio USD']);
+      setValue('mercadoAltoUsd', r['Mercado alto USD']);
+      setValue('precioSugeridoUsd', r['Precio sugerido USD']);
+      setValue('brechaMercadoProm', r['Brecha vs mercado promedio (%)']);
+      setValue('posicionDiamante', r['Posición diamante']);
+      setValue('recomendacionPrecio', r['Recomendación precio']);
       const input = document.getElementById('imagenProducto'); if (input) input.value = '';
       imagenProducto = null;
       imagenEliminar = false;
@@ -649,6 +782,7 @@
       setImageStatus('Este registro ya puede tener una imagen guardada en Sheets. Para reemplazarla, pega o selecciona una nueva.', false);
       calcBasicos();
       calcROI();
+      calcDiamantePrecios();
     }
 
     function validarRegistroPayload(payload){
@@ -659,6 +793,17 @@
       if (!payload.estatusNpi) { alert('Debes indicar el Estatus NPI.'); return false; }
       if (modoRegistro === 'editar' && !registroActualId) { alert('Falta el ID del registro a editar.'); return false; }
       if (imagenProcessing) { alert('Espera a que termine de procesarse la imagen.'); return false; }
+      if (payload.mercadoBajoUsd || payload.mercadoPromUsd || payload.mercadoAltoUsd) {
+        if (!(payload.mercadoBajoUsd > 0 && payload.mercadoPromUsd > 0 && payload.mercadoAltoUsd > 0)) {
+          alert('Captura los tres precios de mercado: bajo, promedio y alto.');
+          return false;
+        }
+
+        if (!(payload.mercadoBajoUsd <= payload.mercadoPromUsd && payload.mercadoPromUsd <= payload.mercadoAltoUsd)) {
+          alert('El mercado debe estar ordenado: bajo <= promedio <= alto.');
+          return false;
+        }
+      }
       const imagenInput = document.getElementById('imagenProducto');
       if (imagenInput && imagenInput.files && imagenInput.files.length && !imagenProducto) {
         alert('Espera a que termine de cargarse la imagen o selecciona otra.');
@@ -680,6 +825,8 @@
         arancel: valNum('arancel')/100,
         iva: valNum('iva')/100,
         tc: tc,
+        tcFecha: tcFecha,
+        tcFuente: tcFuente,
         aplicarIVAenUSD: document.getElementById('ivaEnUSD').checked,
         listaUSD_sinIVA: valNum('listaUsdSin'),
         certMXN: valNum('certMXN'),
@@ -689,6 +836,13 @@
         roiTarget: valNum('roiTarget'),
         estatusNpi: document.getElementById('estatusNpi').value,
         comentariosNpi: document.getElementById('comentariosNpi').value,
+        mercadoBajoUsd: valNum('mercadoBajoUsd'),
+        mercadoPromUsd: valNum('mercadoPromUsd'),
+        mercadoAltoUsd: valNum('mercadoAltoUsd'),
+        precioSugeridoUsd: valNum('precioSugeridoUsd'),
+        brechaMercadoProm: valNum('brechaMercadoProm'),
+        posicionDiamante: document.getElementById('posicionDiamante').value,
+        recomendacionPrecio: document.getElementById('recomendacionPrecio').value,
         imagen: imagenProducto,
         imagenEliminar: imagenEliminar
       };
@@ -770,6 +924,69 @@
 
       const certUSD = tc ? (valNum('certMXN')/tc) : 0;
       setOut('certUSD', fmtCurrency(certUSD));
+      calcDiamantePrecios();
+    }
+
+    function calcDiamantePrecios() {
+      const precioLista = valNum('listaUsdSin');
+      const mercadoBajo = valNum('mercadoBajoUsd');
+      const mercadoProm = valNum('mercadoPromUsd');
+      const mercadoAlto = valNum('mercadoAltoUsd');
+      const roi = valNum('roiPct');
+      const margen = valNum('margen');
+
+      let posicion = '';
+      let recomendacion = '';
+      const precioSugerido = mercadoProm || precioLista || 0;
+      const brecha = mercadoProm > 0 ? ((precioLista - mercadoProm) / mercadoProm) * 100 : 0;
+
+      if (!precioLista || !mercadoBajo || !mercadoProm || !mercadoAlto) {
+        posicion = 'Sin datos';
+        recomendacion = 'Captura precios de mercado';
+      } else if (precioLista < mercadoBajo) {
+        posicion = 'Agresivo';
+        recomendacion = 'Revisar margen: precio por debajo del mercado bajo';
+      } else if (precioLista <= mercadoProm) {
+        posicion = 'Competitivo';
+        recomendacion = 'Precio alineado para competir';
+      } else if (precioLista <= mercadoAlto) {
+        posicion = 'Premium';
+        recomendacion = 'Validar valor diferencial del producto';
+      } else {
+        posicion = 'Fuera de rango';
+        recomendacion = 'Revisar precio o justificar premium';
+      }
+
+      if (posicion !== 'Sin datos' && roi && roi < valNum('roiTarget')) {
+        recomendacion += ' y validar ROI contra objetivo';
+      }
+      if (posicion !== 'Sin datos' && margen < 20) {
+        recomendacion += ' con margen bajo';
+      }
+
+      setOut('precioSugeridoUsd', fmtCurrency(precioSugerido));
+      setOut('brechaMercadoProm', fmtPercent(brecha));
+      setOut('posicionDiamante', posicion);
+      setOut('recomendacionPrecio', recomendacion);
+
+      renderDiamanteActivo(posicion);
+    }
+
+    function renderDiamanteActivo(posicion) {
+      ['diamondAgresivo','diamondCompetitivo','diamondPremium','diamondFuera'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.classList.remove('diamond-active');
+      });
+
+      const map = {
+        'Agresivo': 'diamondAgresivo',
+        'Competitivo': 'diamondCompetitivo',
+        'Premium': 'diamondPremium',
+        'Fuera de rango': 'diamondFuera'
+      };
+
+      const active = document.getElementById(map[posicion]);
+      if (active) active.classList.add('diamond-active');
     }
 
     // ==== ROI (con barra visual)
@@ -816,6 +1033,7 @@
       fill.className = 'meter-fill ' + (ok ? 'ok' : 'low');
       const label = document.getElementById('meterLabel');
       label.textContent = target>0 ? `${(ratio*100).toFixed(1)}% del objetivo` : '—';
+      calcDiamantePrecios();
     }
 
     // ==== Guardar / actualizar (con overlay)
@@ -833,6 +1051,7 @@
           setModoNuevo();
           actualizarModoVisual();
           const registroId = res && res.registroId ? res.registroId : '';
+          cargarListaRegistros();
           setStatus(`Registro ${registroId} creado en NPI 2026.`);
           alert(`Registro ${registroId} creado en NPI 2026.`);
         })
@@ -859,6 +1078,8 @@
           if (btn) btn.disabled = false;
           const registroId = res && res.registroId ? res.registroId : registroActualId;
           setModoEditar(registroId, registroActualCol);
+          cargarListaRegistros();
+          syncRegistroSelect(registroId);
           setStatus(`Registro ${registroId} actualizado.`);
           alert(`Registro ${registroId} actualizado.`);
           imagenProducto = null;
@@ -909,6 +1130,7 @@
     initImageInteractions();
     setModoNuevo();
     cargarTC();
+    cargarListaRegistros();
   </script>
 </body>
 </html>
