@@ -54,13 +54,21 @@ function categoryColor_(cat) {
   return map[cat] || '#ffffff';
 }
 
-// ===== Historial en columnas
-function ensureHistorialCols_() {
+// ===== NPI 2026 en columnas
+const NPI_2026_SHEET_NAME = 'NPI 2026';
+const NPI_2026_RECORD_PREFIX = 'RIB-DES-';
+const NPI_2026_IMAGE_ROW = 4;
+const NPI_2026_IMAGE_ROW_HEIGHT = 130;
+const NPI_2026_IMAGE_COL_WIDTH = 160;
+const NPI_2026_IMAGE_WIDTH = 140;
+const NPI_2026_IMAGE_HEIGHT = 110;
+
+function ensureNpi2026_() {
   const ss = SpreadsheetApp.getActive();
-  const sh = ss.getSheetByName('HistorialCols') || ss.insertSheet('HistorialCols');
+  const sh = ss.getSheetByName(NPI_2026_SHEET_NAME) || ss.insertSheet(NPI_2026_SHEET_NAME);
 
   const baseRows = [
-    'Fecha','Usuario','Producto','Código','MOQ',
+    'Registro','Fecha','Usuario','Imagen','Producto','Código','MOQ',
     'Costo USD','Tipo de cambio','IVA (%)','Arancel (%)','Margen (%)','Aplicar IVA en USD',
     'Costo puesto USD',
     'Lista de precios final (USD sin IVA)',
@@ -94,7 +102,7 @@ function ensureHistorialCols_() {
     catRows.push(`Dist. ${c} MXN (con IVA)`);
   });
 
-  const labels = baseRows.concat(catRows).concat(['Imagen']);
+  const labels = baseRows.concat(catRows);
 
   if (sh.getLastRow() < labels.length) {
     sh.getRange(1, 1, labels.length, 1).setValues(labels.map(x => [x]));
@@ -169,6 +177,12 @@ function eliminarImagenesEnCelda_(sh, row, col) {
   });
 }
 
+
+function ajustarCeldaImagen_(sh, col) {
+  sh.setRowHeight(NPI_2026_IMAGE_ROW, NPI_2026_IMAGE_ROW_HEIGHT);
+  sh.setColumnWidth(col, Math.max(sh.getColumnWidth(col), NPI_2026_IMAGE_COL_WIDTH));
+}
+
 function guardarImagenRegistro_(sh, row, col, imagen) {
   if (!row) return;
 
@@ -176,6 +190,7 @@ function guardarImagenRegistro_(sh, row, col, imagen) {
 
   const cell = sh.getRange(row, col);
   cell.clearContent().clearNote();
+  ajustarCeldaImagen_(sh, col);
 
   if (!imagen || !imagen.dataUrl) {
     cell.setValue('Sin imagen');
@@ -211,13 +226,66 @@ function guardarImagenRegistro_(sh, row, col, imagen) {
   const blob = Utilities.newBlob(bytes, match[1], name);
   cell.setValue(name);
   cell.setNote(`Imagen: ${name}\nTipo: ${match[1]}\nTamaño: ${Math.round(bytes.length / 1024)} KB\nOrigen: ${source}`);
-  sh.setRowHeight(row, 120);
-  sh.setColumnWidth(col, Math.max(sh.getColumnWidth(col), 140));
+  ajustarCeldaImagen_(sh, col);
   const image = sh.insertImage(blob, col, row);
-  image.setWidth(120).setHeight(100);
+  image.setWidth(NPI_2026_IMAGE_WIDTH).setHeight(NPI_2026_IMAGE_HEIGHT);
 }
 
 /* ===================== Guardado principal (columnas) ===================== */
+function formatRegistroId_(n) {
+  return NPI_2026_RECORD_PREFIX + String(n).padStart(3, '0');
+}
+
+function getUltimoNumeroRegistroNpi2026_(sh) {
+  const lastCol = sh.getLastColumn();
+  if (lastCol < 2) return 0;
+
+  const ids = sh.getRange(1, 2, 1, lastCol - 1).getValues()[0];
+  for (let i = ids.length - 1; i >= 0; i--) {
+    const match = String(ids[i] || '').trim().match(/^RIB-DES-(\d+)$/i);
+    if (match) return Number(match[1]) || 0;
+  }
+  return 0;
+}
+
+function getSiguienteRegistroNpi2026_(sh) {
+  return formatRegistroId_(getUltimoNumeroRegistroNpi2026_(sh) + 1);
+}
+
+function normalizarRegistroNpi2026_(registroId) {
+  return String(registroId || '').trim().toUpperCase();
+}
+
+function findRegistroNpi2026_(registroId) {
+  const { sheet: sh, rowIndex } = ensureNpi2026_();
+  const target = normalizarRegistroNpi2026_(registroId);
+  if (!target) return null;
+
+  const lastCol = sh.getLastColumn();
+  if (lastCol < 2) return null;
+
+  const ids = sh.getRange(1, 2, 1, lastCol - 1).getValues()[0];
+  for (let i = 0; i < ids.length; i++) {
+    if (normalizarRegistroNpi2026_(ids[i]) === target) {
+      return { sheet: sh, rowIndex, col: i + 2, registroId: String(ids[i]).trim() };
+    }
+  }
+  return null;
+}
+
+function getRegistroNpi2026(registroId) {
+  const found = findRegistroNpi2026_(registroId);
+  if (!found) return null;
+
+  const labels = found.sheet.getRange(1, 1, found.sheet.getLastRow(), 1).getValues().map(r => String(r[0] || ''));
+  const values = found.sheet.getRange(1, found.col, labels.length, 1).getValues().map(r => r[0]);
+  const record = {};
+  labels.forEach((label, i) => {
+    if (label) record[label] = values[i];
+  });
+  return { registroId: found.registroId, col: found.col, record };
+}
+
 function saveRegistroColumnar(payload) {
   const {
     producto, codigo, moq,
@@ -228,22 +296,24 @@ function saveRegistroColumnar(payload) {
     imagen
   } = payload;
 
-  const { sheet: sh, rowIndex } = ensureHistorialCols_();
+  const { sheet: sh, rowIndex } = ensureNpi2026_();
   const plan = getPlanDescuentos();
 
   // Columna nueva
   const col = Math.max(2, sh.getLastColumn() + 1);
+  const registroId = getSiguienteRegistroNpi2026_(sh);
   const L = toCol_(col);
   const ref = label => `${L}${rowIndex[label]}`;
 
   // 1) Bases (valores)
   const user = (Session.getActiveUser().getEmail && Session.getActiveUser().getEmail()) || '';
+  sh.getRange(rowIndex['Registro'], col).setValue(registroId);
   sh.getRange(rowIndex['Fecha'], col).setValue(new Date());
   sh.getRange(rowIndex['Usuario'], col).setValue(user);
   sh.getRange(rowIndex['Producto'], col).setValue(producto || '');
   sh.getRange(rowIndex['Código'], col).setValue(codigo || '');
   sh.getRange(rowIndex['MOQ'], col).setValue(moq || 0);
-  guardarImagenRegistro_(sh, rowIndex['Imagen'], col, imagen);
+  guardarImagenRegistro_(sh, NPI_2026_IMAGE_ROW, col, imagen);
   sh.getRange(rowIndex['Costo USD'], col).setValue(costoUSD || 0);
   sh.getRange(rowIndex['Tipo de cambio'], col).setValue(tc || 0);
   sh.getRange(rowIndex['IVA (%)'], col).setValue((Number(iva)*100) || 0);
@@ -347,7 +417,8 @@ function saveRegistroColumnar(payload) {
 
   sh.autoResizeColumn(1);
   sh.autoResizeColumn(col);
-  return true;
+  ajustarCeldaImagen_(sh, col);
+  return { ok: true, registroId, sheetName: NPI_2026_SHEET_NAME };
 }
 
 // ===== Export escenario (sin cambios)
@@ -403,4 +474,5 @@ function exportEscenario(payload) {
 }
 
 // Compatibilidad con llamadas antiguas
+function ensureHistorialCols_() { return ensureNpi2026_(); }
 function saveRegistroFilas(payload) { return saveRegistroColumnar(payload); }

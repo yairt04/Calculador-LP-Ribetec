@@ -109,7 +109,7 @@
       </label>
       <div class="image-field">
         <span class="muted">Vista previa / casilla asignada</span>
-        <div id="imagePreview" class="image-preview-box empty" tabindex="0">Selecciona, pega (Ctrl+V / Cmd+V) o arrastra una imagen aquí. Se guardará en la fila “Imagen” de la columna del registro.</div>
+        <div id="imagePreview" class="image-preview-box empty" tabindex="0">Selecciona, pega (Ctrl+V / Cmd+V) o arrastra una imagen aquí. Se guardará en la fila 4 de la columna del registro en “NPI 2026”.</div>
       </div>
     </div>
 
@@ -188,7 +188,7 @@
 
   <div class="row" style="gap:8px; justify-content:flex-end;">
     <button class="btn ghost" onclick="calcROI()">Calcular ROI</button>
-    <button id="btnGuardar" class="btn primary" onclick="guardarHistorial()">Guardar en Historial (columnas)</button>
+    <button id="btnGuardar" class="btn primary" onclick="guardarNpi2026()">Guardar en NPI 2026</button>
   </div>
 
   <!-- Escenario -->
@@ -232,7 +232,7 @@
     let tc = 0, plan = [], imagenProducto = null, imagenPreviewUrl = null, imagenProcessing = false;
 
     function defaultImageHelpText(){
-      return 'Selecciona, pega (Ctrl+V / Cmd+V) o arrastra una imagen aquí. Se guardará en la fila “Imagen” de la columna del registro.';
+      return 'Selecciona, pega (Ctrl+V / Cmd+V) o arrastra una imagen aquí. Se guardará en la fila 4 de la columna del registro en “NPI 2026”.';
     }
 
     function setImageStatus(msg, isError){
@@ -593,7 +593,7 @@
     }
 
     // ==== Guardar (con overlay)
-    function guardarHistorial() {
+    function guardarNpi2026() {
       const btn = document.getElementById('btnGuardar');
       try {
         const producto = document.getElementById('producto').value.trim();
@@ -628,25 +628,26 @@
           imagen: imagenProducto
         };
 
-        showLoader('Guardando en Historial…');
+        showLoader('Guardando en NPI 2026…');
         if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
 
         google.script.run
-          .withSuccessHandler(function(){
+          .withSuccessHandler(function(res){
             hideLoader();
-            if (btn) { btn.disabled = false; btn.textContent = 'Guardar en Historial (columnas)'; }
-            alert('Escenario guardado en "HistorialCols" con ROI y semáforo.');
+            if (btn) { btn.disabled = false; btn.textContent = 'Guardar en NPI 2026'; }
+            const registroId = res && res.registroId ? ` (${res.registroId})` : '';
+            alert(`Registro${registroId} guardado en "NPI 2026" con ROI y semáforo.`);
           })
           .withFailureHandler(function(err){
             hideLoader();
-            if (btn) { btn.disabled = false; btn.textContent = 'Guardar en Historial (columnas)'; }
+            if (btn) { btn.disabled = false; btn.textContent = 'Guardar en NPI 2026'; }
             alert('Error al guardar: ' + (err && err.message ? err.message : err));
           })
           .saveRegistroColumnar(payload);
 
       } catch (e) {
         hideLoader();
-        if (btn) { btn.disabled = false; btn.textContent = 'Guardar en Historial (columnas)'; }
+        if (btn) { btn.disabled = false; btn.textContent = 'Guardar en NPI 2026'; }
         alert('Error: ' + (e && e.message ? e.message : e));
       }
     }
