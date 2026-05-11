@@ -642,6 +642,8 @@
 
       google.script.run
         .withSuccessHandler(function(rows){
+          console.log('Registros NPI recibidos:', rows);
+
           const select = document.getElementById('registroSelect');
           if (!select) return;
 
@@ -649,7 +651,7 @@
           select.innerHTML = '<option value="">Selecciona un registro...</option>';
 
           if (!rows || !rows.length) {
-            select.innerHTML = '<option value="">Sin registros guardados</option>';
+            select.innerHTML = '<option value="">No se detectaron registros RIB-DES en NPI 2026</option>';
             return;
           }
 

@@ -470,33 +470,66 @@ function getRegistroNpi2026(registroId) {
 }
 
 function listarRegistrosNpi2026() {
-  const { sheet: sh, rowIndex } = ensureNpi2026_();
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName('NPI 2026');
+
+  if (!sh) return [];
 
   const lastCol = sh.getLastColumn();
-  if (lastCol < 2) return [];
+  const lastRow = sh.getLastRow();
 
-  const registroRow = rowIndex['Registro'] || 1;
-  const productoRow = rowIndex['Producto'] || 8;
-  const estatusRow = rowIndex['Estatus NPI'];
-  const lastUpdateRow = rowIndex['Última actualización'];
+  if (lastCol < 2 || lastRow < 1) return [];
+
+  const labels = sh
+    .getRange(1, 1, lastRow, 1)
+    .getDisplayValues()
+    .map(r => String(r[0] || '').trim());
+
+  const registroRow = labels.indexOf('Registro') + 1;
+  const productoRow = labels.indexOf('Producto') + 1;
+  const estatusRow = labels.indexOf('Estatus NPI') + 1;
+  const updateRow = labels.indexOf('Última actualización') + 1;
+
+  if (!registroRow) {
+    throw new Error('No se encontró la fila "Registro" en NPI 2026.');
+  }
+
+  if (!productoRow) {
+    throw new Error('No se encontró la fila "Producto" en NPI 2026.');
+  }
+
   const width = lastCol - 1;
 
-  const registros = sh.getRange(registroRow, 2, 1, width).getValues()[0];
-  const productos = sh.getRange(productoRow, 2, 1, width).getValues()[0];
-  const estatus = estatusRow ? sh.getRange(estatusRow, 2, 1, width).getValues()[0] : [];
-  const updates = lastUpdateRow ? sh.getRange(lastUpdateRow, 2, 1, width).getValues()[0] : [];
+  const registros = sh
+    .getRange(registroRow, 2, 1, width)
+    .getDisplayValues()[0];
+
+  const productos = sh
+    .getRange(productoRow, 2, 1, width)
+    .getDisplayValues()[0];
+
+  const estatus = estatusRow
+    ? sh.getRange(estatusRow, 2, 1, width).getDisplayValues()[0]
+    : [];
+
+  const updates = updateRow
+    ? sh.getRange(updateRow, 2, 1, width).getDisplayValues()[0]
+    : [];
+
   const data = [];
 
   for (let i = 0; i < registros.length; i++) {
     const registroId = String(registros[i] || '').trim();
-    if (!registroId) continue;
+
+    if (!/^RIB-DES-\d+/i.test(registroId)) continue;
 
     const producto = String(productos[i] || '').trim();
+
     data.push({
       registroId,
       producto,
       estatus: String(estatus[i] || '').trim(),
-      ultimaActualizacion: updates[i] || '',
+      ultimaActualizacion: String(updates[i] || '').trim(),
       col: i + 2,
       label: registroId + ' — ' + (producto || 'Sin producto')
     });
