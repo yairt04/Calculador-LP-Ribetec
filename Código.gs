@@ -440,19 +440,53 @@ function normalizarRegistroNpi2026_(registroId) {
 }
 
 function findRegistroNpi2026_(registroId) {
-  const { sheet: sh, rowIndex } = ensureNpi2026_();
   const target = normalizarRegistroNpi2026_(registroId);
+
   if (!target) return null;
 
-  const lastCol = sh.getLastColumn();
-  if (lastCol < 2) return null;
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName('NPI 2026');
 
-  const ids = sh.getRange(1, 2, 1, lastCol - 1).getValues()[0];
+  if (!sh) return null;
+
+  const lastCol = sh.getLastColumn();
+  const lastRow = sh.getLastRow();
+
+  if (lastCol < 2 || lastRow < 1) return null;
+
+  const labels = sh
+    .getRange(1, 1, lastRow, 1)
+    .getDisplayValues()
+    .map(r => String(r[0] || '').trim());
+
+  const registroRow = labels.indexOf('Registro') + 1;
+
+  if (!registroRow) {
+    throw new Error('No se encontró la fila "Registro".');
+  }
+
+  const ids = sh
+    .getRange(registroRow, 2, 1, lastCol - 1)
+    .getDisplayValues()[0];
+
   for (let i = 0; i < ids.length; i++) {
-    if (normalizarRegistroNpi2026_(ids[i]) === target) {
-      return { sheet: sh, rowIndex, col: i + 2, registroId: String(ids[i]).trim() };
+    const current = normalizarRegistroNpi2026_(ids[i]);
+
+    Logger.log({
+      target,
+      current,
+      raw: ids[i]
+    });
+
+    if (current === target) {
+      return {
+        sheet: sh,
+        col: i + 2,
+        registroId: String(ids[i] || '').trim()
+      };
     }
   }
+
   return null;
 }
 
