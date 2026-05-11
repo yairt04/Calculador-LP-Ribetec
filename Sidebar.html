@@ -7,7 +7,7 @@
     h2 { margin:0 0 12px; font-size:18px; }
     .row { display:flex; flex-wrap:wrap; gap:12px; margin-bottom:12px; }
     .row > label { flex:1 1 260px; display:flex; flex-direction:column; }
-    input[type="text"], input[type="number"], select { padding:10px; border:1px solid #ddd; border-radius:10px; font-size:14px; }
+    input[type="text"], input[type="number"], input[type="file"], select { padding:10px; border:1px solid #ddd; border-radius:10px; font-size:14px; }
     .card { border:1px solid #eee; border-radius:14px; padding:14px; margin-top:14px; }
     .btn { padding:10px 14px; border:0; border-radius:10px; cursor:pointer; }
     .primary { background:#1a73e8; color:#fff; }
@@ -17,6 +17,13 @@
     .outbox { text-align:right; font-weight:600; background:#fff; border:1px solid #eee; border-radius:10px; padding:8px 10px; }
     #status { margin:6px 0 0; font-size:12px; color:#666; }
     .chip { display:inline-block; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+    .image-field { align-items:stretch; flex:1 1 320px; }
+    .image-preview-box { min-height:150px; border:1px dashed #d0d7de; border-radius:12px; padding:10px; display:flex; align-items:center; justify-content:center; background:#fafafa; overflow:hidden; transition:border-color .2s ease, background .2s ease; }
+    .image-preview-box.empty { color:#777; font-size:13px; }
+    .image-preview-box.dragging { border-color:#1a73e8; background:#e8f0fe; }
+    .image-preview-box img { max-width:100%; max-height:150px; object-fit:contain; display:block; }
+    .image-actions { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
+    .image-status { min-height:18px; margin-top:6px; }
 
     /* ===== Semáforo ROI (barra) ===== */
     .meter-wrap { margin-top:6px; }
@@ -89,6 +96,21 @@
         <span>&nbsp;</span>
         <span><input type="checkbox" id="usarCert" checked> Incluir certificación en ROI</span>
       </label>
+    </div>
+
+    <div class="row">
+      <label class="image-field">Imagen del producto <span class="muted">(máx. 2 MB)</span>
+        <input id="imagenProducto" type="file" accept="image/*" onchange="handleImagenProducto(event)">
+        <div class="image-actions">
+          <button class="btn ghost" type="button" onclick="cambiarImagen()">Cambiar imagen</button>
+          <button class="btn ghost" type="button" onclick="eliminarImagen()">Eliminar imagen</button>
+        </div>
+        <div id="imageStatus" class="muted image-status">Sin imagen seleccionada.</div>
+      </label>
+      <div class="image-field">
+        <span class="muted">Vista previa / casilla asignada</span>
+        <div id="imagePreview" class="image-preview-box empty" tabindex="0">Selecciona, pega (Ctrl+V / Cmd+V) o arrastra una imagen aquí. Se guardará en la fila “Imagen” de la columna del registro.</div>
+      </div>
     </div>
 
     <div class="row">
@@ -203,7 +225,232 @@
   </div>
 
   <script>
-    let tc = 0, plan = [];
+    const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+    const MAX_SOURCE_IMAGE_BYTES = 10 * 1024 * 1024;
+    const IMAGE_MAX_DIMENSION = 1280;
+    const IMAGE_JPEG_QUALITY = 0.82;
+    let tc = 0, plan = [], imagenProducto = null, imagenPreviewUrl = null, imagenProcessing = false;
+
+    function defaultImageHelpText(){
+      return 'Selecciona, pega (Ctrl+V / Cmd+V) o arrastra una imagen aquí. Se guardará en la fila “Imagen” de la columna del registro.';
+    }
+
+    function setImageStatus(msg, isError){
+      const el = document.getElementById('imageStatus');
+      if (!el) return;
+      el.textContent = msg;
+      el.style.color = isError ? '#c00' : '#666';
+    }
+
+    function renderImagePreview(src){
+      const box = document.getElementById('imagePreview');
+      if (!box) return;
+      box.innerHTML = '';
+      box.className = src ? 'image-preview-box' : 'image-preview-box empty';
+      if (!src) {
+        box.textContent = defaultImageHelpText();
+        return;
+      }
+      const img = document.createElement('img');
+      img.src = src;
+      img.alt = 'Vista previa de imagen del producto';
+      box.appendChild(img);
+    }
+
+    function limpiarPreviewTemporal(){
+      if (imagenPreviewUrl) {
+        URL.revokeObjectURL(imagenPreviewUrl);
+        imagenPreviewUrl = null;
+      }
+    }
+
+    function dataUrlSize(dataUrl){
+      const base64 = String(dataUrl || '').split(',')[1] || '';
+      return Math.floor((base64.length * 3) / 4) - (base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0);
+    }
+
+    function fileToDataUrl(file){
+      return new Promise(function(resolve, reject){
+        const reader = new FileReader();
+        reader.onload = function(e){ resolve(e.target.result); };
+        reader.onerror = function(){ reject(new Error('No se pudo leer la imagen seleccionada.')); };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function imageElementFromDataUrl(dataUrl){
+      return new Promise(function(resolve, reject){
+        const img = new Image();
+        img.onload = function(){ resolve(img); };
+        img.onerror = function(){ reject(new Error('No se pudo procesar la imagen.')); };
+        img.src = dataUrl;
+      });
+    }
+
+    async function compressImageDataUrl(file, source){
+      const originalDataUrl = await fileToDataUrl(file);
+      const img = await imageElementFromDataUrl(originalDataUrl);
+      const scale = Math.min(1, IMAGE_MAX_DIMENSION / Math.max(img.width, img.height));
+      const width = Math.max(1, Math.round(img.width * scale));
+      const height = Math.max(1, Math.round(img.height * scale));
+      const mustCompress = source !== 'file' || file.size > MAX_IMAGE_BYTES || scale < 1;
+
+      if (!mustCompress) {
+        return {
+          dataUrl: originalDataUrl,
+          type: file.type,
+          size: dataUrlSize(originalDataUrl),
+          compressed: false
+        };
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+
+      let quality = IMAGE_JPEG_QUALITY;
+      let dataUrl = canvas.toDataURL('image/jpeg', quality);
+      let size = dataUrlSize(dataUrl);
+      while (size > MAX_IMAGE_BYTES && quality > 0.45) {
+        quality -= 0.08;
+        dataUrl = canvas.toDataURL('image/jpeg', quality);
+        size = dataUrlSize(dataUrl);
+      }
+
+      return {
+        dataUrl,
+        type: 'image/jpeg',
+        size,
+        compressed: true,
+        width,
+        height
+      };
+    }
+
+    async function cargarImagenDesdeArchivo(file, source){
+      limpiarPreviewTemporal();
+      imagenProducto = null;
+      if (source !== 'file') {
+        const input = document.getElementById('imagenProducto');
+        if (input) input.value = '';
+      }
+
+      if (!file) {
+        renderImagePreview('');
+        setImageStatus('Sin imagen seleccionada.', false);
+        return;
+      }
+      if (!file.type || !file.type.startsWith('image/')) {
+        renderImagePreview('');
+        setImageStatus('El archivo seleccionado no es una imagen válida.', true);
+        return;
+      }
+      if (file.size > MAX_SOURCE_IMAGE_BYTES) {
+        renderImagePreview('');
+        setImageStatus('La imagen supera el límite de origen de 10 MB.', true);
+        return;
+      }
+
+      imagenProcessing = true;
+      setImageStatus('Procesando imagen…', false);
+      try {
+        const processed = await compressImageDataUrl(file, source);
+        if (processed.size > MAX_IMAGE_BYTES) {
+          renderImagePreview('');
+          setImageStatus('La imagen supera 2 MB incluso después de comprimirla.', true);
+          return;
+        }
+
+        imagenProducto = {
+          name: file.name || `imagen-${source}.jpg`,
+          type: processed.type,
+          size: processed.size,
+          dataUrl: processed.dataUrl,
+          source: source
+        };
+        renderImagePreview(processed.dataUrl);
+        const kb = Math.max(1, Math.round(processed.size / 1024));
+        const origen = source === 'paste' ? 'pegada' : source === 'drop' ? 'arrastrada' : 'seleccionada';
+        const comp = processed.compressed ? ' comprimida' : '';
+        setImageStatus(`Imagen ${origen}${comp}: ${imagenProducto.name} (${kb} KB) lista para guardar.`, false);
+      } catch (err) {
+        imagenProducto = null;
+        renderImagePreview('');
+        setImageStatus(err && err.message ? err.message : 'No se pudo procesar la imagen.', true);
+      } finally {
+        imagenProcessing = false;
+      }
+    }
+
+    function handleImagenProducto(event){
+      const input = event && event.target ? event.target : document.getElementById('imagenProducto');
+      const file = input && input.files && input.files[0];
+      cargarImagenDesdeArchivo(file, 'file').then(function(){
+        if (!imagenProducto && input) input.value = '';
+      });
+    }
+
+    function cambiarImagen(){
+      const input = document.getElementById('imagenProducto');
+      if (input) input.click();
+    }
+
+    function eliminarImagen(){
+      const input = document.getElementById('imagenProducto');
+      if (input) input.value = '';
+      limpiarPreviewTemporal();
+      imagenProducto = null;
+      imagenProcessing = false;
+      renderImagePreview('');
+      setImageStatus('Imagen eliminada del registro actual.', false);
+    }
+
+    function firstImageFile(items){
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const file = item.kind === 'file' ? item.getAsFile() : item;
+        if (file && file.type && file.type.startsWith('image/')) return file;
+      }
+      return null;
+    }
+
+    function handleImagePaste(event){
+      const items = event.clipboardData && event.clipboardData.items;
+      if (!items) return;
+      const file = firstImageFile(items);
+      if (!file) return;
+      event.preventDefault();
+      cargarImagenDesdeArchivo(file, 'paste');
+    }
+
+    function handleImageDrop(event){
+      event.preventDefault();
+      const box = document.getElementById('imagePreview');
+      if (box) box.classList.remove('dragging');
+      const files = event.dataTransfer && event.dataTransfer.files;
+      const file = files && firstImageFile(files);
+      if (!file) {
+        setImageStatus('Arrastra un archivo de imagen válido.', true);
+        return;
+      }
+      cargarImagenDesdeArchivo(file, 'drop');
+    }
+
+    function initImageInteractions(){
+      document.addEventListener('paste', handleImagePaste);
+      const box = document.getElementById('imagePreview');
+      if (!box) return;
+      box.addEventListener('dragover', function(event){
+        event.preventDefault();
+        box.classList.add('dragging');
+      });
+      box.addEventListener('dragleave', function(){ box.classList.remove('dragging'); });
+      box.addEventListener('drop', handleImageDrop);
+    }
 
     // ===== Overlay helpers
     function showLoader(msg){
@@ -352,6 +599,15 @@
         const producto = document.getElementById('producto').value.trim();
         if (!producto) { alert('Debes indicar el nombre del producto.'); return; }
         if (!tc) { alert('Falta Tipo de cambio (Actualizar TC).'); return; }
+        const imagenInput = document.getElementById('imagenProducto');
+        if (imagenProcessing) {
+          alert('Espera a que termine de procesarse la imagen.');
+          return;
+        }
+        if (imagenInput && imagenInput.files && imagenInput.files.length && !imagenProducto) {
+          alert('Espera a que termine de cargarse la imagen o selecciona otra.');
+          return;
+        }
 
         const payload = {
           producto,
@@ -368,7 +624,8 @@
           usarCert: document.getElementById('usarCert').checked,
           roiUnits: valNum('unidadesRoi') || valNum('moq'),
           roiUnitPrice: valNum('unitRoi'),
-          roiTarget: valNum('roiTarget')
+          roiTarget: valNum('roiTarget'),
+          imagen: imagenProducto
         };
 
         showLoader('Guardando en Historial…');
@@ -424,6 +681,7 @@
       });
     }
 
+    initImageInteractions();
     cargarTC();
   </script>
 </body>
