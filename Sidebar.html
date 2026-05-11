@@ -1,0 +1,430 @@
+<!doctype html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body { padding:16px; min-width:860px; font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+    h2 { margin:0 0 12px; font-size:18px; }
+    .row { display:flex; flex-wrap:wrap; gap:12px; margin-bottom:12px; }
+    .row > label { flex:1 1 260px; display:flex; flex-direction:column; }
+    input[type="text"], input[type="number"], select { padding:10px; border:1px solid #ddd; border-radius:10px; font-size:14px; }
+    .card { border:1px solid #eee; border-radius:14px; padding:14px; margin-top:14px; }
+    .btn { padding:10px 14px; border:0; border-radius:10px; cursor:pointer; }
+    .primary { background:#1a73e8; color:#fff; }
+    .ghost { background:#f5f5f5; }
+    .muted { color:#666; font-size:12px; }
+    .grid { display:grid; grid-template-columns: 1fr 220px 120px; align-items:center; column-gap:14px; row-gap:8px; }
+    .outbox { text-align:right; font-weight:600; background:#fff; border:1px solid #eee; border-radius:10px; padding:8px 10px; }
+    #status { margin:6px 0 0; font-size:12px; color:#666; }
+    .chip { display:inline-block; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+
+    /* ===== Semáforo ROI (barra) ===== */
+    .meter-wrap { margin-top:6px; }
+    .meter-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+    .meter { position:relative; height:14px; background:#f1f3f4; border-radius:999px; overflow:hidden; }
+    .meter-fill { position:absolute; inset:0 auto 0 0; width:0%; transition:width .35s ease; }
+    .meter-fill.ok  { background:#34a853; } /* verde */
+    .meter-fill.low { background:#ea4335; } /* rojo */
+    .meter-target { position:absolute; right:0; top:0; bottom:0; width:2px; background:#20212422; }
+
+    /* ===== Overlay de carga ===== */
+    .loader-backdrop{
+      position:fixed; inset:0; display:none; z-index:9999;
+      background:rgba(32,33,36,.38); backdrop-filter:saturate(130%) blur(1px);
+      align-items:center; justify-content:center; flex-direction:column;
+    }
+    .loader{
+      width:64px;height:64px;border-radius:50%;
+      border:6px solid #e8eaed; border-top-color:#1a73e8;
+      animation:spin 1s linear infinite;
+    }
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .loader-text{color:#fff;margin-top:12px;font-weight:600}
+  </style>
+</head>
+<body>
+  <h2>Calculadora de Precios (Lista en USD + ROI)</h2>
+
+  <div class="row">
+    <button class="btn ghost" onclick="cargarTC()">Actualizar TC</button>
+    <div id="tcInfo" class="muted">TC USD/MXN: …</div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label>Producto <span class="muted" style="color:#c00">*</span>
+        <input id="producto" type="text" placeholder="Nombre del producto">
+      </label>
+      <label>Código
+        <input id="codigo" type="text" placeholder="Opcional">
+      </label>
+      <label>MOQ (unidades)
+        <input id="moq" type="number" step="1" min="0" value="0">
+      </label>
+    </div>
+
+    <div class="row">
+      <label>Costo USD
+        <input id="costo" type="number" step="0.01" min="0" oninput="calcBasicos()">
+      </label>
+      <label>Margen (%) <span class="muted">sobre precio</span>
+        <input id="margen" type="number" step="0.1" min="0" max="99.99" value="30" oninput="calcBasicos()">
+      </label>
+      <label>Arancel (%)
+        <input id="arancel" type="number" step="0.1" min="0" max="100" value="5" oninput="calcBasicos()">
+      </label>
+      <label>IVA (%)
+        <input id="iva" type="number" step="0.1" min="0" max="100" value="16" oninput="calcBasicos()">
+      </label>
+    </div>
+
+    <div class="row">
+      <label>Costo certificación (MXN, total)
+        <input id="certMXN" type="number" step="0.01" min="0" value="0">
+      </label>
+      <label>Certificación USD (auto)
+        <input id="certUSD" class="outbox" type="text" readonly>
+      </label>
+      <label style="align-items:center; flex:1 1 220px;">
+        <span>&nbsp;</span>
+        <span><input type="checkbox" id="usarCert" checked> Incluir certificación en ROI</span>
+      </label>
+    </div>
+
+    <div class="row">
+      <label>Categoría distribuidor (para vista principal)
+        <select id="categoria" onchange="calcBasicos()"></select>
+      </label>
+      <label>Descuento leído
+        <input id="descLabel" type="text" disabled>
+      </label>
+      <label>Redondeo Lista
+        <select id="redondeo" onchange="calcBasicos()">
+          <option value="half" selected>Múltiplo 0.50</option>
+          <option value="int">Entero</option>
+          <option value="none">Ninguno</option>
+        </select>
+      </label>
+      <label style="align-items:center; flex:1 1 220px;">
+        <span>&nbsp;</span>
+        <span><input type="checkbox" id="ivaEnUSD" onchange="calcBasicos()"> Aplicar IVA en USD</span>
+      </label>
+    </div>
+
+    <div class="muted">Fórmula: <b>Costo Puesto USD</b> = <i>Costo USD</i> × <b>1.30</b> × (1 + <i>Arancel</i>)</div>
+    <div id="status" class="muted"></div>
+  </div>
+
+  <div class="card grid">
+    <div>Tipo de cambio</div><input class="outbox" id="tcOut" readonly><div></div>
+    <div>Costo Puesto USD</div><input class="outbox" id="costoPuestoUSD" readonly><div>$</div>
+
+    <div>Lista USD (sin IVA)</div>
+    <input class="outbox" id="listaUsdSin" readonly>
+    <div>$ <label class="muted"><input type="checkbox" id="editLista" onchange="toggleEdit('listaUsdSin', this.checked); calcBasicos()"> Editar</label></div>
+
+    <div>Lista USD (con IVA)</div><input class="outbox" id="listaUsdCon" readonly><div>$</div>
+
+    <div>Distribuidor USD (sin IVA)</div>
+    <input class="outbox" id="distUsdSin" readonly>
+    <div>$ <label class="muted"><input type="checkbox" id="editDist" onchange="toggleEdit('distUsdSin', this.checked); calcBasicos()"> Editar</label></div>
+
+    <div>Distribuidor USD (con IVA)</div><input class="outbox" id="distUsdCon" readonly><div>$</div>
+
+    <div>Lista MXN (sin IVA)</div><input class="outbox" id="listaMxnSin" readonly><div>$</div>
+    <div>Lista MXN (con IVA)</div><input class="outbox" id="listaMxnCon" readonly><div>$</div>
+    <div>Distribuidor MXN (sin IVA)</div><input class="outbox" id="distMxnSin" readonly><div>$</div>
+    <div>Distribuidor MXN (con IVA)</div><input class="outbox" id="distMxnCon" readonly><div>$</div>
+  </div>
+
+  <!-- ROI -->
+  <div class="card grid">
+    <div>Unidades</div><input id="unidadesRoi" type="number" step="1" min="0"><div></div>
+    <div>Precio unitario ROI</div><input id="unitRoi" type="number" step="0.01" min="0"><div>$</div>
+    <div>Ingreso total USD</div><input class="outbox" id="ingresoTotal" readonly><div>$</div>
+    <div>Inversión total USD</div><input class="outbox" id="inversionTotal" readonly><div>$</div>
+    <div>Ganancia total USD</div><input class="outbox" id="gananciaTotal" readonly><div>$</div>
+    <div>% ROI</div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <input class="outbox" id="roiPct" readonly style="width:120px;">
+      <span id="roiChip" class="chip">—</span>
+    </div>
+    <div>Objetivo ROI (%)</div><input id="roiTarget" type="number" step="0.1" value="30"><div>%</div>
+
+    <!-- Medidor visual -->
+    <div style="grid-column:1 / -1;" class="meter-wrap">
+      <div class="meter-head">
+        <span class="muted">Semáforo ROI (progreso vs objetivo)</span>
+        <span id="meterLabel" class="muted">—</span>
+      </div>
+      <div class="meter">
+        <div id="roiMeterFill" class="meter-fill low"></div>
+        <div class="meter-target" title="Objetivo 100%"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row" style="gap:8px; justify-content:flex-end;">
+    <button class="btn ghost" onclick="calcROI()">Calcular ROI</button>
+    <button id="btnGuardar" class="btn primary" onclick="guardarHistorial()">Guardar en Historial (columnas)</button>
+  </div>
+
+  <!-- Escenario -->
+  <div class="card">
+    <div class="row" style="justify-content:space-between; align-items:center;">
+      <div class="muted">Escenario por categorías</div>
+      <div>
+        <button class="btn ghost" onclick="renderEscenario()">Ver escenario completo</button>
+        <button class="btn primary" onclick="exportarEscenario()">Exportar escenario a hoja</button>
+      </div>
+    </div>
+    <div id="escenario" style="display:none; margin-top:10px;">
+      <table style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead>
+          <tr style="background:#fafafa;">
+            <th style="text-align:left; padding:8px;">Categoria</th>
+            <th style="text-align:left; padding:8px;">Desc. leído</th>
+            <th style="text-align:right; padding:8px;">Desc. real %</th>
+            <th style="text-align:right; padding:8px;">USD (sin IVA)</th>
+            <th style="text-align:right; padding:8px;">USD (con IVA)</th>
+            <th style="text-align:right; padding:8px;">MXN (sin IVA)</th>
+            <th style="text-align:right; padding:8px;">MXN (con IVA)</th>
+          </tr>
+        </thead>
+        <tbody id="escBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Overlay de carga -->
+  <div id="overlay" class="loader-backdrop">
+    <div class="loader"></div>
+    <div class="loader-text" id="overlayText">Guardando…</div>
+  </div>
+
+  <script>
+    let tc = 0, plan = [];
+
+    // ===== Overlay helpers
+    function showLoader(msg){
+      const o = document.getElementById('overlay');
+      const t = document.getElementById('overlayText');
+      if (t && msg) t.textContent = msg;
+      if (o) o.style.display = 'flex';
+    }
+    function hideLoader(){
+      const o = document.getElementById('overlay');
+      if (o) o.style.display = 'none';
+    }
+
+    function cargarTC() {
+      google.script.run.withSuccessHandler(function(val){
+        tc = Number(val) || 0;
+        document.getElementById('tcInfo').textContent = 'TC USD/MXN: ' + (tc ? tc.toFixed(4) : '—');
+        calcBasicos();
+      }).getTipoCambio();
+
+      google.script.run.withSuccessHandler(function(data){
+        plan = Array.isArray(data) ? data : [];
+        const selCat = document.getElementById('categoria');
+        selCat.innerHTML = '';
+        (plan.length?plan:[{categoria:'—'}]).forEach(p=>{
+          const opt=document.createElement('option');
+          opt.value=p.categoria||''; opt.textContent=p.categoria||'—';
+          selCat.appendChild(opt);
+        });
+        calcBasicos();
+      }).getPlanDescuentos();
+    }
+
+    function valNum(id){ return Number((document.getElementById(id).value || '').toString().replace(/[^0-9.\-]/g,'')) || 0; }
+    function setOut(id, txt){ const el=document.getElementById(id); if(el) el.value = txt; }
+    function fmtCurrency(n){ return Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+    function fmtPercent(n){ return Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+    function toggleEdit(id, enabled){ const el=document.getElementById(id); if(!el) return; el.readOnly=!enabled; el.style.borderColor = enabled ? '#1a73e8' : '#eee'; if (enabled) el.focus(); }
+    function getDesc(cat){ const o=plan.find(p=>p.categoria===cat); document.getElementById('descLabel').value=o?o.descLabel:''; return o?Number(o.descLista)||0:0; }
+    function roundList(v){ const m=document.getElementById('redondeo').value; if(!isFinite(v)) return NaN; if(m==='none') return v; if(m==='int') return Math.round(v); return Math.round(v*2)/2; }
+
+    // ==== Cálculo base (no ROI)
+    function calcBasicos() {
+      const costoUSD = valNum('costo');
+      const margen   = valNum('margen')/100;
+      const arancel  = valNum('arancel')/100;
+      const iva      = valNum('iva')/100;
+      const ivaEnUSD = document.getElementById('ivaEnUSD').checked;
+      const catSel   = document.getElementById('categoria').value || '';
+      const dCat     = getDesc(catSel);
+
+      const costoPuesto = costoUSD * 1.30 * (1 + arancel);
+
+      let dElite = 0;
+      if (plan.length) {
+        const elite = plan.find(p => String(p.categoria).toLowerCase()==='elite');
+        dElite = elite ? Number(elite.descLista)||0 : Math.max(...plan.map(p => Number(p.descLista)||0));
+      }
+      const precioPiso = (1-margen)>0 ? (costoPuesto/(1-margen)) : NaN;
+      let lista = (1-dElite)>0 ? (precioPiso/(1-dElite)) : NaN;
+      lista = roundList(lista);
+
+      const editLista = document.getElementById('editLista').checked;
+      const editDist  = document.getElementById('editDist').checked;
+      if (!editLista && editDist) {
+        const manualD = valNum('distUsdSin');
+        if (manualD>0 && (1-dCat)>0) lista = roundList(manualD/(1-dCat));
+      }
+      if (editLista) { const manualL = valNum('listaUsdSin'); if (manualL>0) lista = manualL; }
+
+      const listaCon = ivaEnUSD ? (lista*(1+iva)) : lista;
+      let distSin = lista*(1-dCat);
+      if (editDist) { const manualD2 = valNum('distUsdSin'); if (manualD2>0) distSin = manualD2; }
+      const distCon = ivaEnUSD ? (distSin*(1+iva)) : distSin;
+
+      const listaMXN = (lista||0)*(tc||0);
+      const listaMXNCon = listaMXN*(1+iva);
+      const distMXN = (distSin||0)*(tc||0);
+      const distMXNCon = distMXN*(1+iva);
+
+      setOut('tcOut', tc?tc.toFixed(4):'—');
+      setOut('costoPuestoUSD', isFinite(costoPuesto)?fmtCurrency(costoPuesto):'—');
+      setOut('listaUsdSin', isFinite(lista)?fmtCurrency(lista):'—');
+      setOut('listaUsdCon', isFinite(listaCon)?fmtCurrency(listaCon):'—');
+      setOut('distUsdSin', isFinite(distSin)?fmtCurrency(distSin):'—');
+      setOut('distUsdCon', isFinite(distCon)?fmtCurrency(distCon):'—');
+      setOut('listaMxnSin', isFinite(listaMXN)?fmtCurrency(listaMXN):'—');
+      setOut('listaMxnCon', isFinite(listaMXNCon)?fmtCurrency(listaMXNCon):'—');
+      setOut('distMxnSin', isFinite(distMXN)?fmtCurrency(distMXN):'—');
+      setOut('distMxnCon', isFinite(distMXNCon)?fmtCurrency(distMXNCon):'—');
+
+      const certUSD = tc ? (valNum('certMXN')/tc) : 0;
+      setOut('certUSD', fmtCurrency(certUSD));
+    }
+
+    // ==== ROI (con barra visual)
+    function calcROI() {
+      const moq = valNum('moq');
+      const unidades = valNum('unidadesRoi') || moq;
+
+      // precio Elite por defecto
+      const lista = valNum('listaUsdSin');
+      const elite = plan.find(p => String(p.categoria).toLowerCase()==='elite');
+      const dElite = elite ? Number(elite.descLista)||0 : 0;
+      const elitePrice = lista*(1-dElite);
+
+      let unit = valNum('unitRoi') || elitePrice;
+      document.getElementById('unitRoi').value = unit;
+      document.getElementById('unidadesRoi').value = unidades;
+
+      const usarCert = document.getElementById('usarCert').checked;
+      const certUSD = tc ? (valNum('certMXN')/tc) : 0;
+      const costoPuesto = valNum('costoPuestoUSD');
+
+      const ingreso = unit*unidades;
+      const inversion = costoPuesto*unidades + (usarCert ? certUSD : 0);
+      const ganancia = ingreso - inversion;
+      const roi = inversion>0 ? (ganancia/inversion*100) : 0;
+
+      setOut('ingresoTotal', fmtCurrency(ingreso));
+      setOut('inversionTotal', fmtCurrency(inversion));
+      setOut('gananciaTotal', fmtCurrency(ganancia));
+      setOut('roiPct', fmtPercent(roi));
+
+      // Chip + barra
+      const target = valNum('roiTarget');
+      const chip = document.getElementById('roiChip');
+      const ok = roi >= target;
+      chip.textContent = ok ? 'OK' : 'BAJO';
+      chip.style.background = ok ? '#e6f4ea' : '#fce8e6';
+      chip.style.color = ok ? '#137333' : '#a50e0e';
+
+      const ratio = target>0 ? (roi/target) : 0;
+      const pct = Math.max(0, Math.min(1, ratio))*100;
+      const fill = document.getElementById('roiMeterFill');
+      fill.style.width = pct + '%';
+      fill.className = 'meter-fill ' + (ok ? 'ok' : 'low');
+      const label = document.getElementById('meterLabel');
+      label.textContent = target>0 ? `${(ratio*100).toFixed(1)}% del objetivo` : '—';
+    }
+
+    // ==== Guardar (con overlay)
+    function guardarHistorial() {
+      const btn = document.getElementById('btnGuardar');
+      try {
+        const producto = document.getElementById('producto').value.trim();
+        if (!producto) { alert('Debes indicar el nombre del producto.'); return; }
+        if (!tc) { alert('Falta Tipo de cambio (Actualizar TC).'); return; }
+
+        const payload = {
+          producto,
+          codigo: document.getElementById('codigo').value.trim(),
+          moq: valNum('moq'),
+          costoUSD: valNum('costo'),
+          margen: valNum('margen')/100,
+          arancel: valNum('arancel')/100,
+          iva: valNum('iva')/100,
+          tc: tc,
+          aplicarIVAenUSD: document.getElementById('ivaEnUSD').checked,
+          listaUSD_sinIVA: valNum('listaUsdSin'),
+          certMXN: valNum('certMXN'),
+          usarCert: document.getElementById('usarCert').checked,
+          roiUnits: valNum('unidadesRoi') || valNum('moq'),
+          roiUnitPrice: valNum('unitRoi'),
+          roiTarget: valNum('roiTarget')
+        };
+
+        showLoader('Guardando en Historial…');
+        if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
+
+        google.script.run
+          .withSuccessHandler(function(){
+            hideLoader();
+            if (btn) { btn.disabled = false; btn.textContent = 'Guardar en Historial (columnas)'; }
+            alert('Escenario guardado en "HistorialCols" con ROI y semáforo.');
+          })
+          .withFailureHandler(function(err){
+            hideLoader();
+            if (btn) { btn.disabled = false; btn.textContent = 'Guardar en Historial (columnas)'; }
+            alert('Error al guardar: ' + (err && err.message ? err.message : err));
+          })
+          .saveRegistroColumnar(payload);
+
+      } catch (e) {
+        hideLoader();
+        if (btn) { btn.disabled = false; btn.textContent = 'Guardar en Historial (columnas)'; }
+        alert('Error: ' + (e && e.message ? e.message : e));
+      }
+    }
+
+    // ==== Escenario
+    function renderEscenario() {
+      const box = document.getElementById('escenario');
+      box.style.display = box.style.display === 'none' ? 'block' : 'none';
+      const body = document.getElementById('escBody');
+      body.innerHTML = '';
+      const lista = valNum('listaUsdSin');
+      const iva = valNum('iva')/100;
+      const ivaEnUSD = document.getElementById('ivaEnUSD').checked;
+
+      plan.forEach(p=>{
+        const d = Number(p.descLista)||0;
+        const usdSin = lista*(1-d);
+        const usdCon = ivaEnUSD ? usdSin*(1+iva) : usdSin;
+        const mxnSin = usdSin*(tc||0);
+        const mxnCon = mxnSin*(1+iva);
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td style="padding:8px; text-align:left;">${p.categoria}</td>
+          <td style="padding:8px; text-align:left;">${p.descLabel||''}</td>
+          <td style="padding:8px; text-align:right;">${(d*100).toFixed(2)}%</td>
+          <td style="padding:8px; text-align:right;">$ ${fmtCurrency(usdSin)}</td>
+          <td style="padding:8px; text-align:right;">$ ${fmtCurrency(usdCon)}</td>
+          <td style="padding:8px; text-align:right;">$ ${fmtCurrency(mxnSin)}</td>
+          <td style="padding:8px; text-align:right;">$ ${fmtCurrency(mxnCon)}</td>`;
+        body.appendChild(tr);
+      });
+    }
+
+    cargarTC();
+  </script>
+</body>
+</html>
