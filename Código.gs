@@ -63,12 +63,9 @@ const NPI_2026_IMAGE_COL_WIDTH = 160;
 const NPI_2026_IMAGE_WIDTH = 140;
 const NPI_2026_IMAGE_HEIGHT = 110;
 
-function ensureNpi2026_() {
-  const ss = SpreadsheetApp.getActive();
-  const sh = ss.getSheetByName(NPI_2026_SHEET_NAME) || ss.insertSheet(NPI_2026_SHEET_NAME);
-
+function getNpi2026Labels_() {
   const baseRows = [
-    'Registro','Fecha','Usuario','Imagen','Producto','Código','MOQ',
+    'Registro','Fecha','Usuario','Imagen','Estatus NPI','Comentarios','Última actualización','Producto','Código','MOQ',
     'Costo USD','Tipo de cambio','IVA (%)','Arancel (%)','Margen (%)','Aplicar IVA en USD',
     'Costo puesto USD',
     'Lista de precios final (USD sin IVA)',
@@ -102,22 +99,45 @@ function ensureNpi2026_() {
     catRows.push(`Dist. ${c} MXN (con IVA)`);
   });
 
-  const labels = baseRows.concat(catRows);
+  return { labels: baseRows.concat(catRows), plan };
+}
 
-  if (sh.getLastRow() < labels.length) {
-    sh.getRange(1, 1, labels.length, 1).setValues(labels.map(x => [x]));
-  } else {
-    const current = sh.getRange(1,1,labels.length,1).getValues().map(r=>String(r[0]));
-    let rewrite=false;
-    for (let i=0;i<labels.length;i++){ if(current[i]!==labels[i]){ rewrite=true; break; } }
-    if (rewrite) sh.getRange(1, 1, labels.length, 1).setValues(labels.map(x => [x]));
-  }
+function syncNpi2026Labels_(sh, labels) {
+  labels.forEach((label, i) => {
+    const targetRow = i + 1;
+    const lastRow = Math.max(sh.getLastRow(), 1);
+    const currentLabels = sh.getRange(1, 1, lastRow, 1).getValues().map(r => String(r[0] || ''));
+
+    if (currentLabels[targetRow - 1] === label) return;
+
+    const existingIndex = currentLabels.indexOf(label);
+    if (existingIndex >= 0) {
+      const sourceRow = existingIndex + 1;
+      sh.moveRows(sh.getRange(sourceRow, 1, 1, sh.getMaxColumns()), targetRow);
+      return;
+    }
+
+    if (targetRow <= sh.getLastRow()) {
+      sh.insertRowsBefore(targetRow, 1);
+    } else if (targetRow > sh.getMaxRows()) {
+      sh.insertRowsAfter(sh.getMaxRows(), targetRow - sh.getMaxRows());
+    }
+    sh.getRange(targetRow, 1).setValue(label);
+  });
+}
+
+function ensureNpi2026_() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(NPI_2026_SHEET_NAME) || ss.insertSheet(NPI_2026_SHEET_NAME);
+  const { labels, plan } = getNpi2026Labels_();
+
+  syncNpi2026Labels_(sh, labels);
 
   sh.setFrozenColumns(1);
-  sh.getRange(1,1,sh.getLastRow(),1).setFontWeight('bold').setBackground('#fafafa');
+  sh.getRange(1,1,Math.max(sh.getLastRow(), labels.length),1).setFontWeight('bold').setBackground('#fafafa');
 
   const rowIndex = {};
-  const finalRows = sh.getRange(1,1,labels.length,1).getValues();
+  const finalRows = sh.getRange(1,1,Math.max(sh.getLastRow(), labels.length),1).getValues();
   for (let i=0;i<finalRows.length;i++) rowIndex[String(finalRows[i][0])] = i+1;
 
   return { sheet: sh, rowIndex, catOrder: plan.map(p=>p.categoria) };
@@ -150,21 +170,49 @@ function paintCategoryRows_(sh, rowIndex, catOrder) {
 // Reglas SOLO para el semáforo ROI (texto OK/BAJO)
 function applySemaforoRules_(sh, rowIndex) {
   const lastCols = Math.max(sh.getMaxColumns() - 1, 1);
+  const rules = [];
   const semRow = rowIndex['Semáforo ROI'];
-  if (!semRow) return;
+  if (semRow) {
+    const rng = sh.getRange(semRow, 2, 1, lastCols);
+    rules.push(
+      SpreadsheetApp.newConditionalFormatRule()
+        .setRanges([rng]).whenTextEqualTo('OK')
+        .setBackground('#e6f4ea').setFontColor('#137333').build(),
+      SpreadsheetApp.newConditionalFormatRule()
+        .setRanges([rng]).whenTextEqualTo('BAJO')
+        .setBackground('#fce8e6').setFontColor('#a50e0e').build()
+    );
+  }
 
-  const rng = sh.getRange(semRow, 2, 1, lastCols);
-  const rules = [
-    SpreadsheetApp.newConditionalFormatRule()
-      .setRanges([rng]).whenTextEqualTo('OK')
-      .setBackground('#e6f4ea').setFontColor('#137333').build(),
-    SpreadsheetApp.newConditionalFormatRule()
-      .setRanges([rng]).whenTextEqualTo('BAJO')
-      .setBackground('#fce8e6').setFontColor('#a50e0e').build()
-  ];
+  const estatusRow = rowIndex['Estatus NPI'];
+  if (estatusRow) {
+    const rng = sh.getRange(estatusRow, 2, 1, lastCols);
+    rules.push(
+      SpreadsheetApp.newConditionalFormatRule().setRanges([rng]).whenTextEqualTo('Nuevo').setBackground('#f1f3f4').setFontColor('#3c4043').build(),
+      SpreadsheetApp.newConditionalFormatRule().setRanges([rng]).whenTextEqualTo('En análisis').setBackground('#fef7e0').setFontColor('#b06000').build(),
+      SpreadsheetApp.newConditionalFormatRule().setRanges([rng]).whenTextEqualTo('Aprobado').setBackground('#e6f4ea').setFontColor('#137333').build(),
+      SpreadsheetApp.newConditionalFormatRule().setRanges([rng]).whenTextEqualTo('Rechazado').setBackground('#fce8e6').setFontColor('#a50e0e').build(),
+      SpreadsheetApp.newConditionalFormatRule().setRanges([rng]).whenTextEqualTo('Lanzado').setBackground('#e8f0fe').setFontColor('#174ea6').build()
+    );
+  }
 
   sh.setConditionalFormatRules(rules);
 }
+
+function aplicarFormatoEstatusNpi_(sh, rowIndex, col, estatus) {
+  const row = rowIndex['Estatus NPI'];
+  if (!row) return;
+  const colors = {
+    'Nuevo': ['#f1f3f4', '#3c4043'],
+    'En análisis': ['#fef7e0', '#b06000'],
+    'Aprobado': ['#e6f4ea', '#137333'],
+    'Rechazado': ['#fce8e6', '#a50e0e'],
+    'Lanzado': ['#e8f0fe', '#174ea6']
+  };
+  const pair = colors[estatus] || colors['Nuevo'];
+  sh.getRange(row, col).setBackground(pair[0]).setFontColor(pair[1]).setFontWeight('bold');
+}
+
 
 
 
@@ -286,51 +334,56 @@ function getRegistroNpi2026(registroId) {
   return { registroId: found.registroId, col: found.col, record };
 }
 
-function saveRegistroColumnar(payload) {
-  const {
-    producto, codigo, moq,
-    costoUSD, margen, arancel, iva, tc, aplicarIVAenUSD,
-    listaUSD_sinIVA,
-    certMXN, usarCert,
-    roiUnits, roiUnitPrice, roiTarget,
-    imagen
-  } = payload;
-
-  const { sheet: sh, rowIndex } = ensureNpi2026_();
+function escribirRegistroNpi2026_(sh, rowIndex, col, payload, options) {
+  options = options || {};
+  payload = payload || {};
   const plan = getPlanDescuentos();
-
-  // Columna nueva
-  const col = Math.max(2, sh.getLastColumn() + 1);
-  const registroId = getSiguienteRegistroNpi2026_(sh);
+  const modo = options.modo || 'nuevo';
+  const registroId = options.registroId;
   const L = toCol_(col);
   const ref = label => `${L}${rowIndex[label]}`;
-
-  // 1) Bases (valores)
+  const now = new Date();
   const user = (Session.getActiveUser().getEmail && Session.getActiveUser().getEmail()) || '';
-  sh.getRange(rowIndex['Registro'], col).setValue(registroId);
-  sh.getRange(rowIndex['Fecha'], col).setValue(new Date());
-  sh.getRange(rowIndex['Usuario'], col).setValue(user);
-  sh.getRange(rowIndex['Producto'], col).setValue(producto || '');
-  sh.getRange(rowIndex['Código'], col).setValue(codigo || '');
-  sh.getRange(rowIndex['MOQ'], col).setValue(moq || 0);
-  guardarImagenRegistro_(sh, NPI_2026_IMAGE_ROW, col, imagen);
-  sh.getRange(rowIndex['Costo USD'], col).setValue(costoUSD || 0);
-  sh.getRange(rowIndex['Tipo de cambio'], col).setValue(tc || 0);
-  sh.getRange(rowIndex['IVA (%)'], col).setValue((Number(iva)*100) || 0);
-  sh.getRange(rowIndex['Arancel (%)'], col).setValue((Number(arancel)*100) || 0);
-  sh.getRange(rowIndex['Margen (%)'], col).setValue((Number(margen)*100) || 0);
-  sh.getRange(rowIndex['Aplicar IVA en USD'], col).setValue(aplicarIVAenUSD ? 'Sí' : 'No');
+  const estatusNpi = payload.estatusNpi || 'Nuevo';
+
+  if (modo === 'nuevo') {
+    sh.getRange(rowIndex['Registro'], col).setValue(registroId);
+    sh.getRange(rowIndex['Fecha'], col).setValue(now);
+    sh.getRange(rowIndex['Usuario'], col).setValue(user);
+  } else {
+    sh.getRange(rowIndex['Registro'], col).setValue(registroId);
+  }
+  if (rowIndex['Última actualización']) sh.getRange(rowIndex['Última actualización'], col).setValue(now);
+
+  if (options.eliminarImagen) {
+    guardarImagenRegistro_(sh, NPI_2026_IMAGE_ROW, col, null);
+  } else if (options.actualizarImagen) {
+    guardarImagenRegistro_(sh, NPI_2026_IMAGE_ROW, col, payload.imagen);
+  }
+
+  sh.getRange(rowIndex['Estatus NPI'], col).setValue(estatusNpi);
+  aplicarFormatoEstatusNpi_(sh, rowIndex, col, estatusNpi);
+  sh.getRange(rowIndex['Comentarios'], col).setValue(payload.comentariosNpi || '').setWrap(true);
+  sh.getRange(rowIndex['Producto'], col).setValue(payload.producto || '');
+  sh.getRange(rowIndex['Código'], col).setValue(payload.codigo || '');
+  sh.getRange(rowIndex['MOQ'], col).setValue(Number(payload.moq) || 0);
+  sh.getRange(rowIndex['Costo USD'], col).setValue(Number(payload.costoUSD) || 0);
+  sh.getRange(rowIndex['Tipo de cambio'], col).setValue(Number(payload.tc) || 0);
+  sh.getRange(rowIndex['IVA (%)'], col).setValue((Number(payload.iva)*100) || 0);
+  sh.getRange(rowIndex['Arancel (%)'], col).setValue((Number(payload.arancel)*100) || 0);
+  sh.getRange(rowIndex['Margen (%)'], col).setValue((Number(payload.margen)*100) || 0);
+  sh.getRange(rowIndex['Aplicar IVA en USD'], col).setValue(payload.aplicarIVAenUSD ? 'Sí' : 'No');
 
   // Certificación (valores de entrada)
-  sh.getRange(rowIndex['Usar certificación'], col).setValue(usarCert ? 'Sí' : 'No');
-  sh.getRange(rowIndex['Costo certificación MXN'], col).setValue(Number(certMXN) || 0);
+  sh.getRange(rowIndex['Usar certificación'], col).setValue(payload.usarCert ? 'Sí' : 'No');
+  sh.getRange(rowIndex['Costo certificación MXN'], col).setValue(Number(payload.certMXN) || 0);
 
-  // 2) Descuentos por categoría (valores)
+  // Descuentos por categoría (valores)
   plan.forEach(p => {
     sh.getRange(rowIndex[`Desc. ${p.categoria} real (%)`], col).setValue((Number(p.descLista)*100) || 0);
   });
 
-  // 3) Fórmulas de precios base
+  // Fórmulas de precios base
   sh.getRange(rowIndex['Costo puesto USD'], col)
     .setFormula(`=${ref('Costo USD')}*1.30*(1+${ref('Arancel (%)')}/100)`);
 
@@ -359,39 +412,34 @@ function saveRegistroColumnar(payload) {
     sh.getRange(mxnCon, col).setFormula(`=${L}${mxnSin}*(1+${ref('IVA (%)')}/100)`);
   });
 
-  // 4) Certificación USD (SI/NO)
+  // Certificación USD (SI/NO)
   sh.getRange(rowIndex['Costo certificación USD'], col)
     .setFormula(`=IF(${ref('Usar certificación')}="Sí", ${ref('Costo certificación MXN')}/${ref('Tipo de cambio')}, 0)`);
 
-  // 5) ROI editable y fórmulas (INCLUYE CERTIFICACIÓN EN LA INVERSIÓN)
-  sh.getRange(rowIndex['ROI unidades'], col).setValue(Number(roiUnits) || 0);
+  // ROI editable y fórmulas
+  sh.getRange(rowIndex['ROI unidades'], col).setValue(Number(payload.roiUnits) || 0);
 
   const elitePriceCell = `${L}${rowIndex['Dist. Elite USD (sin IVA)']}`;
-  if (Number(roiUnitPrice)) {
-    sh.getRange(rowIndex['ROI precio unitario USD'], col).setValue(Number(roiUnitPrice));
+  if (Number(payload.roiUnitPrice)) {
+    sh.getRange(rowIndex['ROI precio unitario USD'], col).setValue(Number(payload.roiUnitPrice));
   } else {
     sh.getRange(rowIndex['ROI precio unitario USD'], col).setFormula(`=${elitePriceCell}`);
   }
 
-  sh.getRange(rowIndex['ROI objetivo (%)'], col).setValue(Number(roiTarget) || 0);
+  sh.getRange(rowIndex['ROI objetivo (%)'], col).setValue(Number(payload.roiTarget) || 0);
 
   sh.getRange(rowIndex['Ingreso total USD'], col)
     .setFormula(`=${ref('ROI precio unitario USD')}*${ref('ROI unidades')}`);
-
-  // *** Aquí se incluye el costo de certificación ***
   sh.getRange(rowIndex['Inversión total USD'], col)
     .setFormula(`=${ref('Costo puesto USD')}*${ref('ROI unidades')} + ${ref('Costo certificación USD')}`);
-
   sh.getRange(rowIndex['Ganancia total USD'], col)
     .setFormula(`=${ref('Ingreso total USD')}-${ref('Inversión total USD')}`);
-
   sh.getRange(rowIndex['% ROI'], col)
     .setFormula(`=IF(${ref('Inversión total USD')}>0, ${ref('Ganancia total USD')}/${ref('Inversión total USD')}*100, )`);
-
   sh.getRange(rowIndex['Semáforo ROI'], col)
     .setFormula(`=IF(${ref('% ROI')}>=${ref('ROI objetivo (%)')},"OK","BAJO")`);
 
-  // 6) Formatos
+  // Formatos
   const money = [
     'Costo USD','Costo puesto USD',
     'Lista de precios final (USD sin IVA)','Lista USD (con IVA)',
@@ -405,21 +453,51 @@ function saveRegistroColumnar(payload) {
     money.push(`Dist. ${p.categoria} MXN (sin IVA)`);
     money.push(`Dist. ${p.categoria} MXN (con IVA)`);
   });
-  money.forEach(label => sh.getRange(rowIndex[label], col).setNumberFormat('$#,##0.00'));
+  money.forEach(label => { if (rowIndex[label]) sh.getRange(rowIndex[label], col).setNumberFormat('$#,##0.00'); });
   sh.getRange(rowIndex['Tipo de cambio'], col).setNumberFormat('0.0000');
   ['IVA (%)','Arancel (%)','Margen (%)','ROI objetivo (%)','% ROI'].forEach(label => {
     const r = rowIndex[label]; if (r) sh.getRange(r, col).setNumberFormat('0.00');
   });
 
-  // Pintado directo + reglas del semáforo (sin fórmulas complejas)
   paintCategoryRows_(sh, rowIndex, plan.map(p => p.categoria));
   applySemaforoRules_(sh, rowIndex);
 
   sh.autoResizeColumn(1);
   sh.autoResizeColumn(col);
   ajustarCeldaImagen_(sh, col);
+}
+
+function saveRegistroColumnar(payload) {
+  const { sheet: sh, rowIndex } = ensureNpi2026_();
+  const col = Math.max(2, sh.getLastColumn() + 1);
+  const registroId = getSiguienteRegistroNpi2026_(sh);
+  escribirRegistroNpi2026_(sh, rowIndex, col, payload || {}, {
+    modo: 'nuevo',
+    registroId,
+    actualizarImagen: true,
+    eliminarImagen: false
+  });
   return { ok: true, registroId, sheetName: NPI_2026_SHEET_NAME };
 }
+
+function updateRegistroNpi2026(payload) {
+  payload = payload || {};
+  const registroId = normalizarRegistroNpi2026_(payload.registroId);
+  if (!registroId) throw new Error('Falta registroId para actualizar el registro NPI.');
+
+  const found = findRegistroNpi2026_(registroId);
+  if (!found) throw new Error(`Registro no encontrado: ${registroId}`);
+
+  escribirRegistroNpi2026_(found.sheet, found.rowIndex, found.col, payload, {
+    modo: 'editar',
+    registroId: found.registroId,
+    actualizarImagen: !!(payload.imagen && payload.imagen.dataUrl),
+    eliminarImagen: payload.imagenEliminar === true
+  });
+
+  return { ok: true, registroId: found.registroId, sheetName: NPI_2026_SHEET_NAME, updated: true };
+}
+
 
 // ===== Export escenario (sin cambios)
 function exportEscenario(payload) {

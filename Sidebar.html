@@ -8,6 +8,7 @@
     .row { display:flex; flex-wrap:wrap; gap:12px; margin-bottom:12px; }
     .row > label { flex:1 1 260px; display:flex; flex-direction:column; }
     input[type="text"], input[type="number"], input[type="file"], select { padding:10px; border:1px solid #ddd; border-radius:10px; font-size:14px; }
+    textarea { padding:10px; border:1px solid #ddd; border-radius:10px; font-size:14px; resize:vertical; }
     .card { border:1px solid #eee; border-radius:14px; padding:14px; margin-top:14px; }
     .btn { padding:10px 14px; border:0; border-radius:10px; cursor:pointer; }
     .primary { background:#1a73e8; color:#fff; }
@@ -24,6 +25,9 @@
     .image-preview-box img { max-width:100%; max-height:150px; object-fit:contain; display:block; }
     .image-actions { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
     .image-status { min-height:18px; margin-top:6px; }
+    .mode-chip { display:inline-block; padding:6px 12px; border-radius:999px; background:#e8f0fe; color:#174ea6; font-weight:700; }
+    .npi-actions { display:flex; gap:8px; flex-wrap:wrap; align-items:end; }
+    .npi-search { flex:1 1 240px; }
 
     /* ===== Semáforo ROI (barra) ===== */
     .meter-wrap { margin-top:6px; }
@@ -58,6 +62,21 @@
   </div>
 
   <div class="card">
+    <h3 style="margin:0 0 10px; font-size:16px;">Gestión NPI</h3>
+    <div class="row" style="align-items:end;">
+      <div style="flex:1 1 100%;"><span id="modoRegistroLabel" class="mode-chip">Modo: Nuevo</span></div>
+      <label class="npi-search">Buscar registro
+        <input id="buscarRegistroId" type="text" placeholder="RIB-DES-001" onkeydown="if(event.key==='Enter') buscarRegistro();">
+      </label>
+      <div class="npi-actions">
+        <button class="btn ghost" type="button" onclick="buscarRegistro()">Buscar</button>
+        <button class="btn ghost" type="button" onclick="nuevoRegistro()">Nuevo registro</button>
+        <button id="btnDuplicar" class="btn ghost" type="button" onclick="duplicarRegistro()" disabled>Duplicar registro</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="row">
       <label>Producto <span class="muted" style="color:#c00">*</span>
         <input id="producto" type="text" placeholder="Nombre del producto">
@@ -67,6 +86,21 @@
       </label>
       <label>MOQ (unidades)
         <input id="moq" type="number" step="1" min="0" value="0">
+      </label>
+    </div>
+
+    <div class="row">
+      <label>Estatus NPI
+        <select id="estatusNpi">
+          <option value="Nuevo">Nuevo</option>
+          <option value="En análisis">En análisis</option>
+          <option value="Aprobado">Aprobado</option>
+          <option value="Rechazado">Rechazado</option>
+          <option value="Lanzado">Lanzado</option>
+        </select>
+      </label>
+      <label style="flex:2 1 520px;">Comentarios
+        <textarea id="comentariosNpi" rows="3" placeholder="Notas del registro, proveedor, validaciones, pendientes..."></textarea>
       </label>
     </div>
 
@@ -188,7 +222,7 @@
 
   <div class="row" style="gap:8px; justify-content:flex-end;">
     <button class="btn ghost" onclick="calcROI()">Calcular ROI</button>
-    <button id="btnGuardar" class="btn primary" onclick="guardarNpi2026()">Guardar en NPI 2026</button>
+    <button id="btnGuardar" class="btn primary" onclick="guardarRegistroNpi()">Guardar nuevo en NPI 2026</button>
   </div>
 
   <!-- Escenario -->
@@ -230,6 +264,10 @@
     const IMAGE_MAX_DIMENSION = 1280;
     const IMAGE_JPEG_QUALITY = 0.82;
     let tc = 0, plan = [], imagenProducto = null, imagenPreviewUrl = null, imagenProcessing = false;
+    let modoRegistro = 'nuevo';
+    let registroActualId = null;
+    let registroActualCol = null;
+    let imagenEliminar = false;
 
     function defaultImageHelpText(){
       return 'Selecciona, pega (Ctrl+V / Cmd+V) o arrastra una imagen aquí. Se guardará en la fila 4 de la columna del registro en “NPI 2026”.';
@@ -334,6 +372,7 @@
     async function cargarImagenDesdeArchivo(file, source){
       limpiarPreviewTemporal();
       imagenProducto = null;
+      imagenEliminar = false;
       if (source !== 'file') {
         const input = document.getElementById('imagenProducto');
         if (input) input.value = '';
@@ -405,8 +444,9 @@
       limpiarPreviewTemporal();
       imagenProducto = null;
       imagenProcessing = false;
+      imagenEliminar = modoRegistro === 'editar';
       renderImagePreview('');
-      setImageStatus('Imagen eliminada del registro actual.', false);
+      setImageStatus(modoRegistro === 'editar' ? 'Imagen marcada para eliminarse al actualizar.' : 'Imagen eliminada del registro actual.', false);
     }
 
     function firstImageFile(items){
@@ -491,6 +531,192 @@
     function toggleEdit(id, enabled){ const el=document.getElementById(id); if(!el) return; el.readOnly=!enabled; el.style.borderColor = enabled ? '#1a73e8' : '#eee'; if (enabled) el.focus(); }
     function getDesc(cat){ const o=plan.find(p=>p.categoria===cat); document.getElementById('descLabel').value=o?o.descLabel:''; return o?Number(o.descLista)||0:0; }
     function roundList(v){ const m=document.getElementById('redondeo').value; if(!isFinite(v)) return NaN; if(m==='none') return v; if(m==='int') return Math.round(v); return Math.round(v*2)/2; }
+
+
+    function setStatus(msg){
+      const el = document.getElementById('status');
+      if (el) el.textContent = msg || '';
+    }
+
+    function actualizarModoVisual(){
+      const label = document.getElementById('modoRegistroLabel');
+      const btn = document.getElementById('btnGuardar');
+      const dup = document.getElementById('btnDuplicar');
+      if (label) label.textContent = modoRegistro === 'editar' && registroActualId ? `Modo: Editando ${registroActualId}` : 'Modo: Nuevo';
+      if (btn) btn.textContent = modoRegistro === 'editar' && registroActualId ? `Actualizar ${registroActualId}` : 'Guardar nuevo en NPI 2026';
+      if (dup) dup.disabled = !(modoRegistro === 'editar' && registroActualId);
+    }
+
+    function setModoNuevo(){
+      modoRegistro = 'nuevo';
+      registroActualId = null;
+      registroActualCol = null;
+      imagenEliminar = false;
+      actualizarModoVisual();
+    }
+
+    function setModoEditar(registroId, col){
+      registroActualId = registroId;
+      registroActualCol = col;
+      modoRegistro = 'editar';
+      imagenEliminar = false;
+      actualizarModoVisual();
+    }
+
+    function nuevoRegistro(){
+      setModoNuevo();
+      ['producto','codigo','costo','certMXN','unidadesRoi','unitRoi','comentariosNpi'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+      [['moq','0'],['margen','30'],['arancel','5'],['iva','16'],['roiTarget','30']].forEach(([id,val]) => { const el = document.getElementById(id); if (el) el.value = val; });
+      const estatus = document.getElementById('estatusNpi'); if (estatus) estatus.value = 'Nuevo';
+      const ivaEnUSD = document.getElementById('ivaEnUSD'); if (ivaEnUSD) ivaEnUSD.checked = false;
+      const usarCert = document.getElementById('usarCert'); if (usarCert) usarCert.checked = true;
+      eliminarImagen();
+      imagenEliminar = false;
+      setStatus('Formulario listo para crear un nuevo registro.');
+      calcBasicos();
+      calcROI();
+    }
+
+    function normalizarInputRegistroId(input) {
+      const raw = String(input || '').trim().toUpperCase();
+      if (/^\d+$/.test(raw)) return 'RIB-DES-' + raw.padStart(3, '0');
+      if (/^RIB-DES-\d+$/.test(raw)) {
+        const n = raw.match(/\d+$/)[0];
+        return 'RIB-DES-' + n.padStart(3, '0');
+      }
+      return raw;
+    }
+
+    function buscarRegistro(){
+      const input = document.getElementById('buscarRegistroId');
+      const registroId = normalizarInputRegistroId(input ? input.value : '');
+      if (input) input.value = registroId;
+      if (!/^RIB-DES-\d{3,}$/.test(registroId)) {
+        alert('Formato inválido. Usa RIB-DES-001 o escribe el número del registro.');
+        return;
+      }
+      showLoader('Buscando registro…');
+      google.script.run
+        .withSuccessHandler(function(res){
+          hideLoader();
+          if (!res) { alert('Registro no encontrado'); return; }
+          llenarFormularioDesdeRegistro(res);
+          setModoEditar(res.registroId, res.col);
+          setStatus(`Registro ${res.registroId} cargado para edición.`);
+        })
+        .withFailureHandler(function(err){
+          hideLoader();
+          alert('Error al buscar: ' + (err && err.message ? err.message : err));
+        })
+        .getRegistroNpi2026(registroId);
+    }
+
+    function percentToForm(value){
+      const n = Number(value) || 0;
+      return Math.abs(n) > 0 && Math.abs(n) <= 1 ? n * 100 : n;
+    }
+    function yesNoToBool(value){ return value === true || String(value || '').toLowerCase() === 'sí' || String(value || '').toLowerCase() === 'si'; }
+    function setValue(id, value){ const el = document.getElementById(id); if (el) el.value = value === null || value === undefined ? '' : value; }
+    function setChecked(id, value){ const el = document.getElementById(id); if (el) el.checked = !!value; }
+
+    function llenarFormularioDesdeRegistro(res){
+      const r = (res && res.record) || {};
+      setValue('producto', r['Producto']);
+      setValue('codigo', r['Código']);
+      setValue('moq', r['MOQ']);
+      setValue('costo', r['Costo USD']);
+      setValue('margen', percentToForm(r['Margen (%)']));
+      setValue('arancel', percentToForm(r['Arancel (%)']));
+      setValue('iva', percentToForm(r['IVA (%)']));
+      setChecked('ivaEnUSD', yesNoToBool(r['Aplicar IVA en USD']));
+      setValue('certMXN', r['Costo certificación MXN']);
+      setChecked('usarCert', yesNoToBool(r['Usar certificación']));
+      setValue('unidadesRoi', r['ROI unidades']);
+      setValue('unitRoi', r['ROI precio unitario USD']);
+      setValue('roiTarget', percentToForm(r['ROI objetivo (%)']));
+      setValue('estatusNpi', r['Estatus NPI'] || 'Nuevo');
+      setValue('comentariosNpi', r['Comentarios']);
+      const sheetTc = Number(r['Tipo de cambio']) || 0;
+      if (sheetTc) {
+        tc = sheetTc;
+        const tcInfo = document.getElementById('tcInfo');
+        if (tcInfo) tcInfo.textContent = 'TC USD/MXN: ' + tc.toFixed(4);
+      }
+      const input = document.getElementById('imagenProducto'); if (input) input.value = '';
+      imagenProducto = null;
+      imagenEliminar = false;
+      renderImagePreview('');
+      setImageStatus('Este registro ya puede tener una imagen guardada en Sheets. Para reemplazarla, pega o selecciona una nueva.', false);
+      calcBasicos();
+      calcROI();
+    }
+
+    function validarRegistroPayload(payload){
+      if (!payload.producto) { alert('Debes indicar el nombre del producto.'); return false; }
+      if (!(payload.costoUSD > 0)) { alert('Costo USD debe ser mayor a 0.'); return false; }
+      if (!(payload.moq > 0)) { alert('MOQ debe ser mayor a 0.'); return false; }
+      if (!payload.tc) { alert('Falta Tipo de cambio (Actualizar TC).'); return false; }
+      if (!payload.estatusNpi) { alert('Debes indicar el Estatus NPI.'); return false; }
+      if (modoRegistro === 'editar' && !registroActualId) { alert('Falta el ID del registro a editar.'); return false; }
+      if (imagenProcessing) { alert('Espera a que termine de procesarse la imagen.'); return false; }
+      const imagenInput = document.getElementById('imagenProducto');
+      if (imagenInput && imagenInput.files && imagenInput.files.length && !imagenProducto) {
+        alert('Espera a que termine de cargarse la imagen o selecciona otra.');
+        return false;
+      }
+      return true;
+    }
+
+    function buildRegistroPayload(){
+      calcBasicos();
+      calcROI();
+      return {
+        registroId: registroActualId,
+        producto: document.getElementById('producto').value.trim(),
+        codigo: document.getElementById('codigo').value.trim(),
+        moq: valNum('moq'),
+        costoUSD: valNum('costo'),
+        margen: valNum('margen')/100,
+        arancel: valNum('arancel')/100,
+        iva: valNum('iva')/100,
+        tc: tc,
+        aplicarIVAenUSD: document.getElementById('ivaEnUSD').checked,
+        listaUSD_sinIVA: valNum('listaUsdSin'),
+        certMXN: valNum('certMXN'),
+        usarCert: document.getElementById('usarCert').checked,
+        roiUnits: valNum('unidadesRoi') || valNum('moq'),
+        roiUnitPrice: valNum('unitRoi'),
+        roiTarget: valNum('roiTarget'),
+        estatusNpi: document.getElementById('estatusNpi').value,
+        comentariosNpi: document.getElementById('comentariosNpi').value,
+        imagen: imagenProducto,
+        imagenEliminar: imagenEliminar
+      };
+    }
+
+    function duplicarRegistro() {
+      if (modoRegistro !== 'editar' || !registroActualId) {
+        alert('Primero carga un registro para duplicarlo.');
+        return;
+      }
+      const origen = registroActualId;
+      setModoNuevo();
+      const comentarios = document.getElementById('comentariosNpi');
+      if (comentarios) {
+        comentarios.value = comentarios.value
+          ? comentarios.value + '\nDuplicado de ' + origen
+          : 'Duplicado de ' + origen;
+      }
+      eliminarImagen();
+      imagenEliminar = false;
+      setStatus(`Registro duplicado desde ${origen}. Guarda para generar un nuevo ID.`);
+      alert('Registro listo para duplicarse. Revisa los datos y guarda para generar un nuevo ID. Si quieres duplicar también la imagen, vuelve a pegarla o selecciónala.');
+    }
+
+    function guardarRegistroNpi() {
+      if (modoRegistro === 'editar' && registroActualId) actualizarRegistroNpi();
+      else guardarNpi2026();
+    }
 
     // ==== Cálculo base (no ROI)
     function calcBasicos() {
@@ -592,64 +818,62 @@
       label.textContent = target>0 ? `${(ratio*100).toFixed(1)}% del objetivo` : '—';
     }
 
-    // ==== Guardar (con overlay)
+    // ==== Guardar / actualizar (con overlay)
     function guardarNpi2026() {
       const btn = document.getElementById('btnGuardar');
-      try {
-        const producto = document.getElementById('producto').value.trim();
-        if (!producto) { alert('Debes indicar el nombre del producto.'); return; }
-        if (!tc) { alert('Falta Tipo de cambio (Actualizar TC).'); return; }
-        const imagenInput = document.getElementById('imagenProducto');
-        if (imagenProcessing) {
-          alert('Espera a que termine de procesarse la imagen.');
-          return;
-        }
-        if (imagenInput && imagenInput.files && imagenInput.files.length && !imagenProducto) {
-          alert('Espera a que termine de cargarse la imagen o selecciona otra.');
-          return;
-        }
+      const payload = buildRegistroPayload();
+      if (!validarRegistroPayload(payload)) return;
 
-        const payload = {
-          producto,
-          codigo: document.getElementById('codigo').value.trim(),
-          moq: valNum('moq'),
-          costoUSD: valNum('costo'),
-          margen: valNum('margen')/100,
-          arancel: valNum('arancel')/100,
-          iva: valNum('iva')/100,
-          tc: tc,
-          aplicarIVAenUSD: document.getElementById('ivaEnUSD').checked,
-          listaUSD_sinIVA: valNum('listaUsdSin'),
-          certMXN: valNum('certMXN'),
-          usarCert: document.getElementById('usarCert').checked,
-          roiUnits: valNum('unidadesRoi') || valNum('moq'),
-          roiUnitPrice: valNum('unitRoi'),
-          roiTarget: valNum('roiTarget'),
-          imagen: imagenProducto
-        };
+      showLoader('Guardando en NPI 2026…');
+      if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
+      google.script.run
+        .withSuccessHandler(function(res){
+          hideLoader();
+          if (btn) btn.disabled = false;
+          setModoNuevo();
+          actualizarModoVisual();
+          const registroId = res && res.registroId ? res.registroId : '';
+          setStatus(`Registro ${registroId} creado en NPI 2026.`);
+          alert(`Registro ${registroId} creado en NPI 2026.`);
+        })
+        .withFailureHandler(function(err){
+          hideLoader();
+          if (btn) btn.disabled = false;
+          actualizarModoVisual();
+          alert('Error al guardar: ' + (err && err.message ? err.message : err));
+        })
+        .saveRegistroColumnar(payload);
+    }
 
-        showLoader('Guardando en NPI 2026…');
-        if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
+    function actualizarRegistroNpi() {
+      const btn = document.getElementById('btnGuardar');
+      const payload = buildRegistroPayload();
+      payload.registroId = registroActualId;
+      if (!validarRegistroPayload(payload)) return;
 
-        google.script.run
-          .withSuccessHandler(function(res){
-            hideLoader();
-            if (btn) { btn.disabled = false; btn.textContent = 'Guardar en NPI 2026'; }
-            const registroId = res && res.registroId ? ` (${res.registroId})` : '';
-            alert(`Registro${registroId} guardado en "NPI 2026" con ROI y semáforo.`);
-          })
-          .withFailureHandler(function(err){
-            hideLoader();
-            if (btn) { btn.disabled = false; btn.textContent = 'Guardar en NPI 2026'; }
-            alert('Error al guardar: ' + (err && err.message ? err.message : err));
-          })
-          .saveRegistroColumnar(payload);
-
-      } catch (e) {
-        hideLoader();
-        if (btn) { btn.disabled = false; btn.textContent = 'Guardar en NPI 2026'; }
-        alert('Error: ' + (e && e.message ? e.message : e));
-      }
+      showLoader(`Actualizando ${registroActualId}…`);
+      if (btn) { btn.disabled = true; btn.textContent = 'Actualizando…'; }
+      google.script.run
+        .withSuccessHandler(function(res){
+          hideLoader();
+          if (btn) btn.disabled = false;
+          const registroId = res && res.registroId ? res.registroId : registroActualId;
+          setModoEditar(registroId, registroActualCol);
+          setStatus(`Registro ${registroId} actualizado.`);
+          alert(`Registro ${registroId} actualizado.`);
+          imagenProducto = null;
+          imagenEliminar = false;
+          const input = document.getElementById('imagenProducto'); if (input) input.value = '';
+          renderImagePreview('');
+          setImageStatus('Este registro ya puede tener una imagen guardada en Sheets. Para reemplazarla, pega o selecciona una nueva.', false);
+        })
+        .withFailureHandler(function(err){
+          hideLoader();
+          if (btn) btn.disabled = false;
+          actualizarModoVisual();
+          alert('Error al actualizar: ' + (err && err.message ? err.message : err));
+        })
+        .updateRegistroNpi2026(payload);
     }
 
     // ==== Escenario
@@ -683,6 +907,7 @@
     }
 
     initImageInteractions();
+    setModoNuevo();
     cargarTC();
   </script>
 </body>
