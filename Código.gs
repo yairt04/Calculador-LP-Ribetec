@@ -441,49 +441,31 @@ function normalizarRegistroNpi2026_(registroId) {
 
 function findRegistroNpi2026_(registroId) {
   const target = normalizarRegistroNpi2026_(registroId);
-
   if (!target) return null;
 
   const ss = SpreadsheetApp.getActive();
   const sh = ss.getSheetByName('NPI 2026');
-
   if (!sh) return null;
 
-  const lastCol = sh.getLastColumn();
-  const lastRow = sh.getLastRow();
+  const display = sh.getDataRange().getDisplayValues();
+  if (!display || !display.length) return null;
 
-  if (lastCol < 2 || lastRow < 1) return null;
+  for (let r = 0; r < display.length; r++) {
+    const label = String(display[r][0] || '').trim();
 
-  const labels = sh
-    .getRange(1, 1, lastRow, 1)
-    .getDisplayValues()
-    .map(r => String(r[0] || '').trim());
+    if (label !== 'Registro') continue;
 
-  const registroRow = labels.indexOf('Registro') + 1;
+    for (let c = 1; c < display[r].length; c++) {
+      const raw = String(display[r][c] || '').trim();
+      const current = normalizarRegistroNpi2026_(raw);
 
-  if (!registroRow) {
-    throw new Error('No se encontró la fila "Registro".');
-  }
-
-  const ids = sh
-    .getRange(registroRow, 2, 1, lastCol - 1)
-    .getDisplayValues()[0];
-
-  for (let i = 0; i < ids.length; i++) {
-    const current = normalizarRegistroNpi2026_(ids[i]);
-
-    Logger.log({
-      target,
-      current,
-      raw: ids[i]
-    });
-
-    if (current === target) {
-      return {
-        sheet: sh,
-        col: i + 2,
-        registroId: String(ids[i] || '').trim()
-      };
+      if (current === target) {
+        return {
+          sheet: sh,
+          col: c + 1,
+          registroId: raw
+        };
+      }
     }
   }
 
@@ -492,15 +474,29 @@ function findRegistroNpi2026_(registroId) {
 
 function getRegistroNpi2026(registroId) {
   const found = findRegistroNpi2026_(registroId);
-  if (!found) return null;
 
-  const labels = found.sheet.getRange(1, 1, found.sheet.getLastRow(), 1).getValues().map(r => String(r[0] || ''));
-  const values = found.sheet.getRange(1, found.col, labels.length, 1).getValues().map(r => r[0]);
+  if (!found) {
+    return null;
+  }
+
+  const sh = found.sheet;
+  const col = found.col;
+  const display = sh.getDataRange().getDisplayValues();
+
   const record = {};
-  labels.forEach((label, i) => {
-    if (label) record[label] = values[i];
-  });
-  return { registroId: found.registroId, col: found.col, record };
+
+  for (let r = 0; r < display.length; r++) {
+    const key = String(display[r][0] || '').trim();
+    if (!key) continue;
+
+    record[key] = display[r][col - 1];
+  }
+
+  return {
+    registroId: found.registroId,
+    col,
+    record
+  };
 }
 
 function listarRegistrosNpi2026() {
@@ -509,62 +505,50 @@ function listarRegistrosNpi2026() {
 
   if (!sh) return [];
 
-  const lastCol = sh.getLastColumn();
-  const lastRow = sh.getLastRow();
+  const display = sh.getDataRange().getDisplayValues();
+  if (!display || !display.length) return [];
 
-  if (lastCol < 2 || lastRow < 1) return [];
+  let registroRow = -1;
+  let productoRow = -1;
+  let estatusRow = -1;
+  let updateRow = -1;
 
-  const labels = sh
-    .getRange(1, 1, lastRow, 1)
-    .getDisplayValues()
-    .map(r => String(r[0] || '').trim());
+  for (let r = 0; r < display.length; r++) {
+    const label = String(display[r][0] || '').trim();
 
-  const registroRow = labels.indexOf('Registro') + 1;
-  const productoRow = labels.indexOf('Producto') + 1;
-  const estatusRow = labels.indexOf('Estatus NPI') + 1;
-  const updateRow = labels.indexOf('Última actualización') + 1;
-
-  if (!registroRow) {
-    throw new Error('No se encontró la fila "Registro" en NPI 2026.');
+    if (label === 'Registro') registroRow = r;
+    if (label === 'Producto') productoRow = r;
+    if (label === 'Estatus NPI') estatusRow = r;
+    if (label === 'Última actualización') updateRow = r;
   }
 
-  if (!productoRow) {
-    throw new Error('No se encontró la fila "Producto" en NPI 2026.');
-  }
-
-  const width = lastCol - 1;
-
-  const registros = sh
-    .getRange(registroRow, 2, 1, width)
-    .getDisplayValues()[0];
-
-  const productos = sh
-    .getRange(productoRow, 2, 1, width)
-    .getDisplayValues()[0];
-
-  const estatus = estatusRow
-    ? sh.getRange(estatusRow, 2, 1, width).getDisplayValues()[0]
-    : [];
-
-  const updates = updateRow
-    ? sh.getRange(updateRow, 2, 1, width).getDisplayValues()[0]
-    : [];
+  if (registroRow === -1) return [];
 
   const data = [];
 
-  for (let i = 0; i < registros.length; i++) {
-    const registroId = String(registros[i] || '').trim();
+  for (let c = 1; c < display[registroRow].length; c++) {
+    const registroId = String(display[registroRow][c] || '').trim();
 
     if (!/^RIB-DES-\d+/i.test(registroId)) continue;
 
-    const producto = String(productos[i] || '').trim();
+    const producto = productoRow >= 0
+      ? String(display[productoRow][c] || '').trim()
+      : '';
+
+    const estatus = estatusRow >= 0
+      ? String(display[estatusRow][c] || '').trim()
+      : '';
+
+    const ultimaActualizacion = updateRow >= 0
+      ? String(display[updateRow][c] || '').trim()
+      : '';
 
     data.push({
       registroId,
       producto,
-      estatus: String(estatus[i] || '').trim(),
-      ultimaActualizacion: String(updates[i] || '').trim(),
-      col: i + 2,
+      estatus,
+      ultimaActualizacion,
+      col: c + 1,
       label: registroId + ' — ' + (producto || 'Sin producto')
     });
   }
