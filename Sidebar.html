@@ -216,15 +216,15 @@
     <h3 style="margin:0 0 10px; font-size:16px;">Diamante de precios</h3>
 
     <div class="row">
-      <label>Mercado bajo USD
+      <label>Mercado bajo MXN
         <input id="mercadoBajoUsd" type="number" step="0.01" min="0" oninput="calcDiamantePrecios()">
       </label>
 
-      <label>Mercado promedio USD
+      <label>Mercado promedio MXN
         <input id="mercadoPromUsd" type="number" step="0.01" min="0" oninput="calcDiamantePrecios()">
       </label>
 
-      <label>Mercado alto USD
+      <label>Mercado alto MXN
         <input id="mercadoAltoUsd" type="number" step="0.01" min="0" oninput="calcDiamantePrecios()">
       </label>
     </div>
@@ -240,7 +240,7 @@
     </div>
 
     <div class="grid">
-      <div>Precio sugerido USD</div><input class="outbox" id="precioSugeridoUsd" readonly><div>$</div>
+      <div>Precio sugerido MXN</div><input class="outbox" id="precioSugeridoUsd" readonly><div>$</div>
       <div>Brecha vs mercado promedio</div><input class="outbox" id="brechaMercadoProm" readonly><div>%</div>
       <div>Posición diamante</div><input class="outbox" id="posicionDiamante" readonly><div></div>
       <div>Recomendación</div><input class="outbox" id="recomendacionPrecio" readonly><div></div>
@@ -590,13 +590,34 @@
       }).getPlanDescuentos();
     }
 
-    function valNum(id){ return Number((document.getElementById(id).value || '').toString().replace(/[^0-9.\-]/g,'')) || 0; }
+    function parseDisplayNumber(value){
+      if (value === null || value === undefined) return 0;
+      if (typeof value === 'number') return value;
+      let raw = String(value).trim();
+      if (!raw || raw === '—') return 0;
+      const isNegative = /^\(.*\)$/.test(raw) || raw.includes('-');
+      raw = raw.replace(/\((.*)\)/, '$1').replace(/[^0-9.,\-]/g, '');
+      const lastComma = raw.lastIndexOf(',');
+      const lastDot = raw.lastIndexOf('.');
+      if (lastComma > lastDot) {
+        raw = raw.replace(/\./g, '').replace(',', '.');
+      } else {
+        raw = raw.replace(/,/g, '');
+      }
+      let n = Number(raw.replace(/-/g, '')) || 0;
+      return isNegative ? -n : n;
+    }
+    function valNum(id){ const el=document.getElementById(id); return parseDisplayNumber(el ? el.value : 0); }
     function setOut(id, txt){ const el=document.getElementById(id); if(el) el.value = txt; }
     function fmtCurrency(n){ return Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
     function fmtPercent(n){ return Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
-    function toggleEdit(id, enabled){ const el=document.getElementById(id); if(!el) return; el.readOnly=!enabled; el.style.borderColor = enabled ? '#1a73e8' : '#eee'; if (enabled) el.focus(); }
+    function toggleEdit(id, enabled){ const el=document.getElementById(id); if(!el) return; el.readOnly=!enabled; el.style.borderColor = enabled ? '#1a73e8' : '#eee'; }
     function getDesc(cat){ const o=plan.find(p=>p.categoria===cat); document.getElementById('descLabel').value=o?o.descLabel:''; return o?Number(o.descLista)||0:0; }
     function roundList(v){ const m=document.getElementById('redondeo').value; if(!isFinite(v)) return NaN; if(m==='none') return v; if(m==='int') return Math.round(v); return Math.round(v*2)/2; }
+    function firstFilled(){ for (let i=0;i<arguments.length;i++){ const v=arguments[i]; if (v !== null && v !== undefined && String(v).trim() !== '') return v; } return ''; }
+    function setNumberValue(id, value){ const el=document.getElementById(id); if (el) el.value = parseDisplayNumber(value) || ''; }
+    function setNumberValueAllowZero(id, value){ const el=document.getElementById(id); if (el) el.value = parseDisplayNumber(value); }
+    function setCheckboxValue(id, checked){ const el=document.getElementById(id); if (el) el.checked = !!checked; }
 
 
     function setStatus(msg){
@@ -695,6 +716,10 @@
       const estatus = document.getElementById('estatusNpi'); if (estatus) estatus.value = 'Nuevo';
       const ivaEnUSD = document.getElementById('ivaEnUSD'); if (ivaEnUSD) ivaEnUSD.checked = false;
       const usarCert = document.getElementById('usarCert'); if (usarCert) usarCert.checked = true;
+      const editLista = document.getElementById('editLista'); if (editLista) editLista.checked = false;
+      const editDist = document.getElementById('editDist'); if (editDist) editDist.checked = false;
+      toggleEdit('listaUsdSin', false);
+      toggleEdit('distUsdSin', false);
       eliminarImagen();
       imagenEliminar = false;
       setStatus('Formulario listo para crear un nuevo registro.');
@@ -739,7 +764,7 @@
     }
 
     function percentToForm(value){
-      const n = Number(value) || 0;
+      const n = parseDisplayNumber(value) || 0;
       return Math.abs(n) > 0 && Math.abs(n) <= 1 ? n * 100 : n;
     }
     function yesNoToBool(value){ return value === true || String(value || '').toLowerCase() === 'sí' || String(value || '').toLowerCase() === 'si'; }
@@ -748,40 +773,63 @@
 
     function llenarFormularioDesdeRegistro(res){
       const r = (res && res.record) || {};
+
       setValue('producto', r['Producto']);
       setValue('codigo', r['Código']);
-      setValue('moq', r['MOQ']);
-      setValue('costo', r['Costo USD']);
-      setValue('margen', percentToForm(r['Margen (%)']));
-      setValue('arancel', percentToForm(r['Arancel (%)']));
-      setValue('iva', percentToForm(r['IVA (%)']));
+      setNumberValueAllowZero('moq', r['MOQ']);
+      setNumberValue('costo', r['Costo USD']);
+      setNumberValueAllowZero('margen', percentToForm(r['Margen (%)']));
+      setNumberValueAllowZero('arancel', percentToForm(r['Arancel (%)']));
+      setNumberValueAllowZero('iva', percentToForm(r['IVA (%)']));
       setChecked('ivaEnUSD', yesNoToBool(r['Aplicar IVA en USD']));
-      setValue('certMXN', r['Costo certificación MXN']);
+      setNumberValueAllowZero('certMXN', r['Costo certificación MXN']);
       setChecked('usarCert', yesNoToBool(r['Usar certificación']));
-      setValue('unidadesRoi', r['ROI unidades']);
-      setValue('unitRoi', r['ROI precio unitario USD']);
-      setValue('roiTarget', percentToForm(r['ROI objetivo (%)']));
+      setNumberValueAllowZero('unidadesRoi', r['ROI unidades']);
+      setNumberValue('unitRoi', r['ROI precio unitario USD']);
+      setNumberValueAllowZero('roiTarget', percentToForm(r['ROI objetivo (%)']));
       setValue('estatusNpi', r['Estatus NPI'] || 'Nuevo');
       setValue('comentariosNpi', r['Comentarios']);
-      const sheetTc = Number(r['Tipo de cambio']) || 0;
+
+      const sheetTc = parseDisplayNumber(r['Tipo de cambio']);
       if (sheetTc) {
         tc = sheetTc;
         tcFecha = r['Fecha TC'] || '';
         tcFuente = r['Fuente TC'] || '';
         renderTcInfo();
       }
-      setValue('mercadoBajoUsd', r['Mercado bajo USD']);
-      setValue('mercadoPromUsd', r['Mercado promedio USD']);
-      setValue('mercadoAltoUsd', r['Mercado alto USD']);
-      setValue('precioSugeridoUsd', r['Precio sugerido USD']);
-      setValue('brechaMercadoProm', r['Brecha vs mercado promedio (%)']);
+
+      setNumberValue('mercadoBajoUsd', firstFilled(r['Mercado bajo MXN'], r['Mercado bajo USD']));
+      setNumberValue('mercadoPromUsd', firstFilled(r['Mercado promedio MXN'], r['Mercado promedio USD']));
+      setNumberValue('mercadoAltoUsd', firstFilled(r['Mercado alto MXN'], r['Mercado alto USD']));
+      setNumberValue('precioSugeridoUsd', firstFilled(r['Precio sugerido MXN'], r['Precio sugerido USD']));
+      setNumberValueAllowZero('brechaMercadoProm', r['Brecha vs mercado promedio (%)']);
       setValue('posicionDiamante', r['Posición diamante']);
       setValue('recomendacionPrecio', r['Recomendación precio']);
+
+      // Preservar precio histórico guardado para poder editarlo sin que se recalcule al cargar.
+      const savedLista = firstFilled(r['Lista de precios final (USD sin IVA)'], r['Lista USD (sin IVA)']);
+      const editLista = document.getElementById('editLista');
+      if (savedLista && parseDisplayNumber(savedLista) > 0) {
+        if (editLista) editLista.checked = true;
+        toggleEdit('listaUsdSin', true);
+        setOut('listaUsdSin', fmtCurrency(parseDisplayNumber(savedLista)));
+      } else {
+        if (editLista) editLista.checked = false;
+        toggleEdit('listaUsdSin', false);
+      }
+
+      const editDist = document.getElementById('editDist');
+      if (editDist) {
+        editDist.checked = false;
+        toggleEdit('distUsdSin', false);
+      }
+
       const input = document.getElementById('imagenProducto'); if (input) input.value = '';
       imagenProducto = null;
       imagenEliminar = false;
       renderImagePreview('');
       setImageStatus('Este registro ya puede tener una imagen guardada en Sheets. Para reemplazarla, pega o selecciona una nueva.', false);
+
       calcBasicos();
       calcROI();
       calcDiamantePrecios();
@@ -930,7 +978,7 @@
     }
 
     function calcDiamantePrecios() {
-      const precioLista = valNum('listaUsdSin');
+      const precioLista = valNum('listaMxnCon');
       const mercadoBajo = valNum('mercadoBajoUsd');
       const mercadoProm = valNum('mercadoPromUsd');
       const mercadoAlto = valNum('mercadoAltoUsd');
@@ -944,19 +992,19 @@
 
       if (!precioLista || !mercadoBajo || !mercadoProm || !mercadoAlto) {
         posicion = 'Sin datos';
-        recomendacion = 'Captura precios de mercado';
+        recomendacion = 'Captura precios de mercado final';
       } else if (precioLista < mercadoBajo) {
         posicion = 'Agresivo';
-        recomendacion = 'Revisar margen: precio por debajo del mercado bajo';
+        recomendacion = 'Precio por debajo del mercado bajo';
       } else if (precioLista <= mercadoProm) {
         posicion = 'Competitivo';
-        recomendacion = 'Precio alineado para competir';
+        recomendacion = 'Precio competitivo vs ecommerce';
       } else if (precioLista <= mercadoAlto) {
         posicion = 'Premium';
-        recomendacion = 'Validar valor diferencial del producto';
+        recomendacion = 'Precio premium vs ecommerce';
       } else {
         posicion = 'Fuera de rango';
-        recomendacion = 'Revisar precio o justificar premium';
+        recomendacion = 'Fuera de rango vs mercado final';
       }
 
       if (posicion !== 'Sin datos' && roi && roi < valNum('roiTarget')) {
