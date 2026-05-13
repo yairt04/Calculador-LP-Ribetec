@@ -180,10 +180,10 @@ function getNpi2026Labels_() {
     'Lista MXN (sin IVA)',
     'Lista MXN (con IVA)',
     // Diamante de precios
-    'Mercado bajo USD',
-    'Mercado promedio USD',
-    'Mercado alto USD',
-    'Precio sugerido USD',
+    'Mercado bajo MXN',
+    'Mercado promedio MXN',
+    'Mercado alto MXN',
+    'Precio sugerido MXN',
     'Posición diamante',
     'Brecha vs mercado promedio (%)',
     'Recomendación precio',
@@ -218,17 +218,31 @@ function getNpi2026Labels_() {
 }
 
 function syncNpi2026Labels_(sh, labels) {
+  const aliases = {
+    'Mercado bajo MXN': 'Mercado bajo USD',
+    'Mercado promedio MXN': 'Mercado promedio USD',
+    'Mercado alto MXN': 'Mercado alto USD',
+    'Precio sugerido MXN': 'Precio sugerido USD'
+  };
+
   labels.forEach((label, i) => {
     const targetRow = i + 1;
     const lastRow = Math.max(sh.getLastRow(), 1);
     const currentLabels = sh.getRange(1, 1, lastRow, 1).getValues().map(r => String(r[0] || ''));
+    const alias = aliases[label];
 
     if (currentLabels[targetRow - 1] === label) return;
+    if (alias && currentLabels[targetRow - 1] === alias) {
+      sh.getRange(targetRow, 1).setValue(label);
+      return;
+    }
 
-    const existingIndex = currentLabels.indexOf(label);
+    let existingIndex = currentLabels.indexOf(label);
+    if (existingIndex < 0 && alias) existingIndex = currentLabels.indexOf(alias);
     if (existingIndex >= 0) {
       const sourceRow = existingIndex + 1;
       sh.moveRows(sh.getRange(sourceRow, 1, 1, sh.getMaxColumns()), targetRow);
+      sh.getRange(targetRow, 1).setValue(label);
       return;
     }
 
@@ -444,15 +458,20 @@ function findRegistroNpi2026_(registroId) {
   if (!target) return null;
 
   const ss = SpreadsheetApp.getActive();
-  const sh = ss.getSheetByName('NPI 2026');
+  const sh = ss.getSheetByName(NPI_2026_SHEET_NAME);
   if (!sh) return null;
 
   const display = sh.getDataRange().getDisplayValues();
   if (!display || !display.length) return null;
 
+  const rowIndex = {};
+  display.forEach((row, i) => {
+    const label = String(row[0] || '').trim();
+    if (label) rowIndex[label] = i + 1;
+  });
+
   for (let r = 0; r < display.length; r++) {
     const label = String(display[r][0] || '').trim();
-
     if (label !== 'Registro') continue;
 
     for (let c = 1; c < display[r].length; c++) {
@@ -462,6 +481,7 @@ function findRegistroNpi2026_(registroId) {
       if (current === target) {
         return {
           sheet: sh,
+          rowIndex,
           col: c + 1,
           registroId: raw
         };
@@ -564,6 +584,23 @@ function escribirRegistroNpi2026_(sh, rowIndex, col, payload, options) {
   const registroId = options.registroId;
   const L = toCol_(col);
   const ref = label => `${L}${rowIndex[label]}`;
+  [
+  'Registro',
+  'Fecha',
+  'Usuario',
+  'Producto',
+  'Código',
+  'MOQ',
+  'Costo USD',
+  'Tipo de cambio',
+  'IVA (%)',
+  'Arancel (%)',
+  'Margen (%)'
+].forEach(label => {
+  if (!rowIndex[label]) {
+    throw new Error('Falta la fila requerida en NPI 2026: ' + label);
+  }
+});
   const now = new Date();
   const user = (Session.getActiveUser().getEmail && Session.getActiveUser().getEmail()) || '';
   const estatusNpi = payload.estatusNpi || 'Nuevo';
@@ -623,10 +660,10 @@ function escribirRegistroNpi2026_(sh, rowIndex, col, payload, options) {
   sh.getRange(rowIndex['Lista MXN (con IVA)'], col)
     .setFormula(`=${ref('Lista MXN (sin IVA)')}*(1+${ref('IVA (%)')}/100)`);
 
-  sh.getRange(rowIndex['Mercado bajo USD'], col).setValue(Number(payload.mercadoBajoUsd) || 0);
-  sh.getRange(rowIndex['Mercado promedio USD'], col).setValue(Number(payload.mercadoPromUsd) || 0);
-  sh.getRange(rowIndex['Mercado alto USD'], col).setValue(Number(payload.mercadoAltoUsd) || 0);
-  sh.getRange(rowIndex['Precio sugerido USD'], col).setValue(Number(payload.precioSugeridoUsd) || 0);
+  sh.getRange(rowIndex['Mercado bajo MXN'], col).setValue(Number(payload.mercadoBajoUsd) || 0);
+  sh.getRange(rowIndex['Mercado promedio MXN'], col).setValue(Number(payload.mercadoPromUsd) || 0);
+  sh.getRange(rowIndex['Mercado alto MXN'], col).setValue(Number(payload.mercadoAltoUsd) || 0);
+  sh.getRange(rowIndex['Precio sugerido MXN'], col).setValue(Number(payload.precioSugeridoUsd) || 0);
   sh.getRange(rowIndex['Posición diamante'], col).setValue(payload.posicionDiamante || 'Sin datos');
   sh.getRange(rowIndex['Brecha vs mercado promedio (%)'], col).setValue(Number(payload.brechaMercadoProm) || 0);
   sh.getRange(rowIndex['Recomendación precio'], col).setValue(payload.recomendacionPrecio || '').setWrap(true);
@@ -678,7 +715,7 @@ function escribirRegistroNpi2026_(sh, rowIndex, col, payload, options) {
     'Lista de precios final (USD sin IVA)','Lista USD (con IVA)',
     'Lista MXN (sin IVA)','Lista MXN (con IVA)',
     'Costo certificación MXN','Costo certificación USD',
-    'Mercado bajo USD','Mercado promedio USD','Mercado alto USD','Precio sugerido USD',
+    'Mercado bajo MXN','Mercado promedio MXN','Mercado alto MXN','Precio sugerido MXN',
     'ROI precio unitario USD','Ingreso total USD','Inversión total USD','Ganancia total USD'
   ];
   plan.forEach(p => {
@@ -717,19 +754,31 @@ function saveRegistroColumnar(payload) {
 function updateRegistroNpi2026(payload) {
   payload = payload || {};
   const registroId = normalizarRegistroNpi2026_(payload.registroId);
-  if (!registroId) throw new Error('Falta registroId para actualizar el registro NPI.');
 
+  if (!registroId) {
+    throw new Error('Falta registroId para actualizar el registro NPI.');
+  }
+
+  const ensured = ensureNpi2026_();
   const found = findRegistroNpi2026_(registroId);
-  if (!found) throw new Error(`Registro no encontrado: ${registroId}`);
 
-  escribirRegistroNpi2026_(found.sheet, found.rowIndex, found.col, payload, {
+  if (!found) {
+    throw new Error(`Registro no encontrado: ${registroId}`);
+  }
+
+  escribirRegistroNpi2026_(ensured.sheet, ensured.rowIndex, found.col, payload, {
     modo: 'editar',
     registroId: found.registroId,
     actualizarImagen: !!(payload.imagen && payload.imagen.dataUrl),
     eliminarImagen: payload.imagenEliminar === true
   });
 
-  return { ok: true, registroId: found.registroId, sheetName: NPI_2026_SHEET_NAME, updated: true };
+  return {
+    ok: true,
+    registroId: found.registroId,
+    sheetName: NPI_2026_SHEET_NAME,
+    updated: true
+  };
 }
 
 
