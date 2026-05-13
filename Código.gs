@@ -2,6 +2,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('💼 Calculadora de Precios')
     .addItem('Abrir herramienta', 'showModal')
+    .addItem('Reparar fórmulas NPI 2026', 'repararFormulasNpi2026')
     .addToUi();
 }
 
@@ -170,6 +171,46 @@ const NPI_2026_IMAGE_COL_WIDTH = 160;
 const NPI_2026_IMAGE_WIDTH = 140;
 const NPI_2026_IMAGE_HEIGHT = 110;
 
+const NPI_2026_EDITABLE_LABELS = [
+  'Producto',
+  'Código',
+  'MOQ',
+  'Costo USD',
+  'Tipo de cambio',
+  'IVA (%)',
+  'Arancel (%)',
+  'Margen (%)',
+  'Aplicar IVA en USD',
+  'Usar certificación',
+  'Costo certificación MXN',
+  'ROI unidades',
+  'ROI precio unitario USD',
+  'ROI objetivo (%)',
+  'Mercado bajo MXN',
+  'Mercado promedio MXN',
+  'Mercado alto MXN',
+  'Estatus NPI',
+  'Comentarios'
+];
+
+const NPI_2026_CALCULATED_LABELS = [
+  'Costo puesto USD',
+  'Lista de precios final (USD sin IVA)',
+  'Lista USD (con IVA)',
+  'Lista MXN (sin IVA)',
+  'Lista MXN (con IVA)',
+  'Costo certificación USD',
+  'Ingreso total USD',
+  'Inversión total USD',
+  'Ganancia total USD',
+  '% ROI',
+  'Semáforo ROI',
+  'Precio sugerido MXN',
+  'Posición diamante',
+  'Brecha vs mercado promedio (%)',
+  'Recomendación precio'
+];
+
 function getNpi2026Labels_() {
   const baseRows = [
     'Registro','Fecha','Usuario','Imagen','Estatus NPI','Comentarios','Última actualización','Producto','Código','MOQ',
@@ -322,6 +363,18 @@ function applySemaforoRules_(sh, rowIndex) {
       SpreadsheetApp.newConditionalFormatRule().setRanges([rng]).whenTextEqualTo('Aprobado').setBackground('#e6f4ea').setFontColor('#137333').build(),
       SpreadsheetApp.newConditionalFormatRule().setRanges([rng]).whenTextEqualTo('Rechazado').setBackground('#fce8e6').setFontColor('#a50e0e').build(),
       SpreadsheetApp.newConditionalFormatRule().setRanges([rng]).whenTextEqualTo('Lanzado').setBackground('#e8f0fe').setFontColor('#174ea6').build()
+    );
+  }
+
+  const diamanteRow = rowIndex['Posición diamante'];
+  if (diamanteRow) {
+    const rng = sh.getRange(diamanteRow, 2, 1, lastCols);
+    rules.push(
+      SpreadsheetApp.newConditionalFormatRule().setRanges([rng]).whenTextEqualTo('Agresivo').setBackground('#e8f0fe').setFontColor('#174ea6').build(),
+      SpreadsheetApp.newConditionalFormatRule().setRanges([rng]).whenTextEqualTo('Competitivo').setBackground('#e6f4ea').setFontColor('#137333').build(),
+      SpreadsheetApp.newConditionalFormatRule().setRanges([rng]).whenTextEqualTo('Premium').setBackground('#f3e8fd').setFontColor('#6f2da8').build(),
+      SpreadsheetApp.newConditionalFormatRule().setRanges([rng]).whenTextEqualTo('Fuera de rango').setBackground('#fce8e6').setFontColor('#a50e0e').build(),
+      SpreadsheetApp.newConditionalFormatRule().setRanges([rng]).whenTextEqualTo('Sin datos').setBackground('#f1f3f4').setFontColor('#3c4043').build()
     );
   }
 
@@ -576,6 +629,146 @@ function listarRegistrosNpi2026() {
   return data.reverse();
 }
 
+function getEditableRowsNpi2026_(rowIndex) {
+  return NPI_2026_EDITABLE_LABELS.map(label => rowIndex[label]).filter(Boolean);
+}
+
+function getCalculatedRowsNpi2026_(rowIndex) {
+  const rows = NPI_2026_CALCULATED_LABELS.map(label => rowIndex[label]).filter(Boolean);
+  getPlanDescuentos().forEach(p => {
+    [
+      `Dist. ${p.categoria} USD (sin IVA)`,
+      `Dist. ${p.categoria} USD (con IVA)`,
+      `Dist. ${p.categoria} MXN (sin IVA)`,
+      `Dist. ${p.categoria} MXN (con IVA)`
+    ].forEach(label => {
+      if (rowIndex[label]) rows.push(rowIndex[label]);
+    });
+  });
+  return rows;
+}
+
+function aplicarFormatosRegistroNpi2026_(sh, rowIndex, col) {
+  const plan = getPlanDescuentos();
+  const money = [
+    'Costo USD','Costo puesto USD',
+    'Lista de precios final (USD sin IVA)','Lista USD (con IVA)',
+    'Lista MXN (sin IVA)','Lista MXN (con IVA)',
+    'Costo certificación MXN','Costo certificación USD',
+    'Mercado bajo MXN','Mercado promedio MXN','Mercado alto MXN','Precio sugerido MXN',
+    'ROI precio unitario USD','Ingreso total USD','Inversión total USD','Ganancia total USD'
+  ];
+  plan.forEach(p => {
+    money.push(`Dist. ${p.categoria} USD (sin IVA)`);
+    money.push(`Dist. ${p.categoria} USD (con IVA)`);
+    money.push(`Dist. ${p.categoria} MXN (sin IVA)`);
+    money.push(`Dist. ${p.categoria} MXN (con IVA)`);
+  });
+  money.forEach(label => { if (rowIndex[label]) sh.getRange(rowIndex[label], col).setNumberFormat('$#,##0.00'); });
+  if (rowIndex['Tipo de cambio']) sh.getRange(rowIndex['Tipo de cambio'], col).setNumberFormat('0.0000');
+  ['IVA (%)','Arancel (%)','Margen (%)','Brecha vs mercado promedio (%)','ROI objetivo (%)','% ROI'].forEach(label => {
+    const r = rowIndex[label]; if (r) sh.getRange(r, col).setNumberFormat('0.00');
+  });
+}
+
+function aplicarFormulasRegistroNpi2026_(sh, rowIndex, col) {
+  if (!sh || !rowIndex || col < 2) return;
+
+  const plan = getPlanDescuentos();
+  const L = toCol_(col);
+  const ref = label => `${L}${rowIndex[label]}`;
+  const setFormula = (label, formula) => {
+    const row = rowIndex[label];
+    if (row) sh.getRange(row, col).setFormula(formula);
+  };
+
+  const requiredLabels = [
+    'Costo USD','Arancel (%)','Margen (%)','Aplicar IVA en USD','IVA (%)','Tipo de cambio',
+    'Lista de precios final (USD sin IVA)','Lista USD (con IVA)','Lista MXN (sin IVA)',
+    'Lista MXN (con IVA)','Usar certificación','Costo certificación MXN','ROI precio unitario USD',
+    'ROI unidades','ROI objetivo (%)','Mercado bajo MXN','Mercado promedio MXN','Mercado alto MXN'
+  ];
+  requiredLabels.forEach(label => {
+    if (!rowIndex[label]) throw new Error('Falta la fila requerida en NPI 2026: ' + label);
+  });
+
+  setFormula('Costo puesto USD', `=IF(${ref('Costo USD')}<>"",${ref('Costo USD')}*1.30*(1+${ref('Arancel (%)')}/100),)`);
+
+  const eliteDiscountRow = rowIndex['Desc. Elite real (%)'];
+  const descFactor = eliteDiscountRow ? `*(1-${L}${eliteDiscountRow}/100)` : '';
+  setFormula(
+    'Lista de precios final (USD sin IVA)',
+    `=IF((1-${ref('Margen (%)')}/100)${descFactor}>0,${ref('Costo puesto USD')}/(1-${ref('Margen (%)')}/100)${eliteDiscountRow ? `/(1-${L}${eliteDiscountRow}/100)` : ''},)`
+  );
+  setFormula('Lista USD (con IVA)', `=IF(${ref('Aplicar IVA en USD')}="Sí",${ref('Lista de precios final (USD sin IVA)')}*(1+${ref('IVA (%)')}/100),${ref('Lista de precios final (USD sin IVA)')})`);
+  setFormula('Lista MXN (sin IVA)', `=${ref('Lista de precios final (USD sin IVA)')}*${ref('Tipo de cambio')}`);
+  setFormula('Lista MXN (con IVA)', `=${ref('Lista MXN (sin IVA)')}*(1+${ref('IVA (%)')}/100)`);
+
+  setFormula('Precio sugerido MXN', `=IF(${ref('Mercado promedio MXN')}>0,${ref('Mercado promedio MXN')},${ref('Lista MXN (con IVA)')})`);
+  setFormula('Brecha vs mercado promedio (%)', `=IF(${ref('Mercado promedio MXN')}>0,(${ref('Lista MXN (con IVA)')}-${ref('Mercado promedio MXN')})/${ref('Mercado promedio MXN')}*100,)`);
+  setFormula('Posición diamante', `=IF(OR(${ref('Lista MXN (con IVA)')}="",${ref('Mercado bajo MXN')}="",${ref('Mercado promedio MXN')}="",${ref('Mercado alto MXN')}=""),"Sin datos",IF(${ref('Lista MXN (con IVA)')}<${ref('Mercado bajo MXN')},"Agresivo",IF(${ref('Lista MXN (con IVA)')}<=${ref('Mercado promedio MXN')},"Competitivo",IF(${ref('Lista MXN (con IVA)')}<=${ref('Mercado alto MXN')},"Premium","Fuera de rango"))))`);
+  setFormula('Recomendación precio', `=SWITCH(${ref('Posición diamante')},"Agresivo","Precio por debajo del mercado bajo","Competitivo","Precio competitivo vs ecommerce","Premium","Precio premium vs ecommerce","Fuera de rango","Fuera de rango vs mercado final","Captura precios de mercado final")`);
+
+  plan.forEach(p => {
+    const dRow = rowIndex[`Desc. ${p.categoria} real (%)`];
+    const usdSin = rowIndex[`Dist. ${p.categoria} USD (sin IVA)`];
+    const usdCon = rowIndex[`Dist. ${p.categoria} USD (con IVA)`];
+    const mxnSin = rowIndex[`Dist. ${p.categoria} MXN (sin IVA)`];
+    const mxnCon = rowIndex[`Dist. ${p.categoria} MXN (con IVA)`];
+    if (!dRow || !usdSin || !usdCon || !mxnSin || !mxnCon) return;
+
+    sh.getRange(usdSin, col).setFormula(`=${ref('Lista de precios final (USD sin IVA)')}*(1-${L}${dRow}/100)`);
+    sh.getRange(usdCon, col).setFormula(`=IF(${ref('Aplicar IVA en USD')}="Sí",${L}${usdSin}*(1+${ref('IVA (%)')}/100),${L}${usdSin})`);
+    sh.getRange(mxnSin, col).setFormula(`=${L}${usdSin}*${ref('Tipo de cambio')}`);
+    sh.getRange(mxnCon, col).setFormula(`=${L}${mxnSin}*(1+${ref('IVA (%)')}/100)`);
+  });
+
+  setFormula('Costo certificación USD', `=IF(${ref('Usar certificación')}="Sí",${ref('Costo certificación MXN')}/${ref('Tipo de cambio')},0)`);
+  setFormula('Ingreso total USD', `=${ref('ROI precio unitario USD')}*${ref('ROI unidades')}`);
+  setFormula('Inversión total USD', `=${ref('Costo puesto USD')}*${ref('ROI unidades')}+${ref('Costo certificación USD')}`);
+  setFormula('Ganancia total USD', `=${ref('Ingreso total USD')}-${ref('Inversión total USD')}`);
+  setFormula('% ROI', `=IF(${ref('Inversión total USD')}>0,${ref('Ganancia total USD')}/${ref('Inversión total USD')}*100,)`);
+  setFormula('Semáforo ROI', `=IF(${ref('Inversión total USD')}>0,IF(${ref('% ROI')}>=${ref('ROI objetivo (%)')},"OK","BAJO"),"")`);
+
+  aplicarFormatosRegistroNpi2026_(sh, rowIndex, col);
+}
+
+function repararFormulasNpi2026() {
+  const { sheet: sh, rowIndex, catOrder } = ensureNpi2026_();
+  const lastCol = sh.getLastColumn();
+  if (lastCol < 2) return { ok: true, repaired: 0, sheetName: NPI_2026_SHEET_NAME };
+
+  for (let col = 2; col <= lastCol; col++) {
+    aplicarFormulasRegistroNpi2026_(sh, rowIndex, col);
+  }
+
+  paintCategoryRows_(sh, rowIndex, catOrder);
+  applySemaforoRules_(sh, rowIndex);
+  sh.autoResizeColumn(1);
+
+  return { ok: true, repaired: lastCol - 1, sheetName: NPI_2026_SHEET_NAME };
+}
+
+function onEdit(e) {
+  if (!e || !e.range) return;
+
+  const sh = e.range.getSheet();
+  if (sh.getName() !== NPI_2026_SHEET_NAME) return;
+  if (e.range.getColumn() < 2) return;
+  if (e.range.getNumRows() !== 1 || e.range.getNumColumns() !== 1) return;
+
+  const { rowIndex } = ensureNpi2026_();
+  const editableRows = getEditableRowsNpi2026_(rowIndex);
+
+  if (!editableRows.includes(e.range.getRow())) return;
+
+  aplicarFormulasRegistroNpi2026_(sh, rowIndex, e.range.getColumn());
+
+  if (rowIndex['Última actualización']) {
+    sh.getRange(rowIndex['Última actualización'], e.range.getColumn()).setValue(new Date());
+  }
+}
+
 function escribirRegistroNpi2026_(sh, rowIndex, col, payload, options) {
   options = options || {};
   payload = payload || {};
@@ -644,70 +837,25 @@ function escribirRegistroNpi2026_(sh, rowIndex, col, payload, options) {
     sh.getRange(rowIndex[`Desc. ${p.categoria} real (%)`], col).setValue((Number(p.descLista)*100) || 0);
   });
 
-  // Fórmulas de precios base
-  sh.getRange(rowIndex['Costo puesto USD'], col)
-    .setFormula(`=${ref('Costo USD')}*1.30*(1+${ref('Arancel (%)')}/100)`);
-
-  const eliteRow = `Desc. Elite real (%)`;
-  sh.getRange(rowIndex['Lista de precios final (USD sin IVA)'], col)
-    .setFormula(`=IF((1-${ref('Margen (%)')}/100)*(1-${L}${rowIndex[eliteRow]}/100)>0, ${ref('Costo puesto USD')}/(1-${ref('Margen (%)')}/100)/(1-${L}${rowIndex[eliteRow]}/100), )`);
-
-  sh.getRange(rowIndex['Lista USD (con IVA)'], col)
-    .setFormula(`=IF(${ref('Aplicar IVA en USD')}="Sí", ${ref('Lista de precios final (USD sin IVA)')}*(1+${ref('IVA (%)')}/100), ${ref('Lista de precios final (USD sin IVA)')})`);
-
-  sh.getRange(rowIndex['Lista MXN (sin IVA)'], col)
-    .setFormula(`=${ref('Lista de precios final (USD sin IVA)')}*${ref('Tipo de cambio')}`);
-  sh.getRange(rowIndex['Lista MXN (con IVA)'], col)
-    .setFormula(`=${ref('Lista MXN (sin IVA)')}*(1+${ref('IVA (%)')}/100)`);
-
   sh.getRange(rowIndex['Mercado bajo MXN'], col).setValue(Number(payload.mercadoBajoUsd) || 0);
   sh.getRange(rowIndex['Mercado promedio MXN'], col).setValue(Number(payload.mercadoPromUsd) || 0);
   sh.getRange(rowIndex['Mercado alto MXN'], col).setValue(Number(payload.mercadoAltoUsd) || 0);
-  sh.getRange(rowIndex['Precio sugerido MXN'], col).setValue(Number(payload.precioSugeridoUsd) || 0);
-  sh.getRange(rowIndex['Posición diamante'], col).setValue(payload.posicionDiamante || 'Sin datos');
-  sh.getRange(rowIndex['Brecha vs mercado promedio (%)'], col).setValue(Number(payload.brechaMercadoProm) || 0);
-  sh.getRange(rowIndex['Recomendación precio'], col).setValue(payload.recomendacionPrecio || '').setWrap(true);
-  aplicarFormatoDiamante_(sh, rowIndex, col, payload.posicionDiamante || 'Sin datos');
 
-  plan.forEach(p => {
-    const dRow = rowIndex[`Desc. ${p.categoria} real (%)`];
-    const usdSin = rowIndex[`Dist. ${p.categoria} USD (sin IVA)`];
-    const usdCon = rowIndex[`Dist. ${p.categoria} USD (con IVA)`];
-    const mxnSin = rowIndex[`Dist. ${p.categoria} MXN (sin IVA)`];
-    const mxnCon = rowIndex[`Dist. ${p.categoria} MXN (con IVA)`];
-
-    sh.getRange(usdSin, col).setFormula(`=${ref('Lista de precios final (USD sin IVA)')}*(1-${L}${dRow}/100)`);
-    sh.getRange(usdCon, col).setFormula(`=IF(${ref('Aplicar IVA en USD')}="Sí", ${L}${usdSin}*(1+${ref('IVA (%)')}/100), ${L}${usdSin})`);
-    sh.getRange(mxnSin, col).setFormula(`=${L}${usdSin}*${ref('Tipo de cambio')}`);
-    sh.getRange(mxnCon, col).setFormula(`=${L}${mxnSin}*(1+${ref('IVA (%)')}/100)`);
-  });
-
-  // Certificación USD (SI/NO)
-  sh.getRange(rowIndex['Costo certificación USD'], col)
-    .setFormula(`=IF(${ref('Usar certificación')}="Sí", ${ref('Costo certificación MXN')}/${ref('Tipo de cambio')}, 0)`);
-
-  // ROI editable y fórmulas
+  // ROI editable
   sh.getRange(rowIndex['ROI unidades'], col).setValue(Number(payload.roiUnits) || 0);
 
-  const elitePriceCell = `${L}${rowIndex['Dist. Elite USD (sin IVA)']}`;
+  const elitePriceCell = rowIndex['Dist. Elite USD (sin IVA)'] ? `${L}${rowIndex['Dist. Elite USD (sin IVA)']}` : '';
   if (Number(payload.roiUnitPrice)) {
     sh.getRange(rowIndex['ROI precio unitario USD'], col).setValue(Number(payload.roiUnitPrice));
-  } else {
+  } else if (elitePriceCell) {
     sh.getRange(rowIndex['ROI precio unitario USD'], col).setFormula(`=${elitePriceCell}`);
+  } else {
+    sh.getRange(rowIndex['ROI precio unitario USD'], col).setValue(0);
   }
 
   sh.getRange(rowIndex['ROI objetivo (%)'], col).setValue(Number(payload.roiTarget) || 0);
 
-  sh.getRange(rowIndex['Ingreso total USD'], col)
-    .setFormula(`=${ref('ROI precio unitario USD')}*${ref('ROI unidades')}`);
-  sh.getRange(rowIndex['Inversión total USD'], col)
-    .setFormula(`=${ref('Costo puesto USD')}*${ref('ROI unidades')} + ${ref('Costo certificación USD')}`);
-  sh.getRange(rowIndex['Ganancia total USD'], col)
-    .setFormula(`=${ref('Ingreso total USD')}-${ref('Inversión total USD')}`);
-  sh.getRange(rowIndex['% ROI'], col)
-    .setFormula(`=IF(${ref('Inversión total USD')}>0, ${ref('Ganancia total USD')}/${ref('Inversión total USD')}*100, )`);
-  sh.getRange(rowIndex['Semáforo ROI'], col)
-    .setFormula(`=IF(${ref('% ROI')}>=${ref('ROI objetivo (%)')},"OK","BAJO")`);
+  aplicarFormulasRegistroNpi2026_(sh, rowIndex, col);
 
   // Formatos
   const money = [
